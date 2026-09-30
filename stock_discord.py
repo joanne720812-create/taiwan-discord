@@ -11,7 +11,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 TWSE = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'
-TWSE_DATED = 'https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?response=json&date={date}&type=ALLBUT0999'
+TWSE_DATED = 'https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={date}&type=ALLBUT0999'
 TPEX = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
 TZ = ZoneInfo('Asia/Taipei')
 
@@ -87,27 +87,32 @@ def listed_for_date(today):
     if reported and reported != today:
         print(f'證交所指定日期回傳 {reported}，略過')
         return []
-    # MI_INDEX 的欄位順序依 fields9 / data9；從欄名確認避免 API 改版時錯讀價位。
-    fields = data.get('fields9', [])
-    records = data.get('data9', [])
-    expected = ('證券代號', '證券名稱', '成交股數', '成交筆數', '成交金額',
-                '開盤價', '最高價', '最低價', '收盤價')
-    if len(fields) < 11 or len(records) == 0 or any(k not in str(fields[i]) for i, k in enumerate(expected)):
-        raise RuntimeError('證交所 MI_INDEX 欄位變更或無個股資料，請檢查執行紀錄')
+    # 證交所可能調整表格編號；以欄名尋找每日個股行情表。
+    tables = [(data.get(f'fields{i}', []), data.get(f'data{i}', [])) for i in range(1, 20)]
+    tables += [(table.get('fields', []), table.get('data', []))
+               for table in data.get('tables', []) if isinstance(table, dict)]
+    required = ('證券代號', '證券名稱', '成交股數', '開盤價', '最高價', '最低價', '收盤價', '漲跌價差')
+    fields, records = next(((f, r) for f, r in tables
+                            if r and all(any(k in str(col) for col in f) for k in required)), ([], []))
+    if not records:
+        preview = [(str(k), len(v)) for k, v in data.items() if k.startswith(('fields', 'data')) and isinstance(v, list)]
+        raise RuntimeError(f'證交所無個股行情表；收到的表格：{preview}，請檢查資料來源')
+    idx = {key: next(i for i, col in enumerate(fields) if key in str(col)) for key in required}
+    sign_idx = next((i for i, col in enumerate(fields) if '漲跌(+/-)' in str(col)), None)
     results = []
     for row in records:
-        if len(row) < 11:
+        if len(row) < len(fields):
             continue
-        code = str(row[0]).strip()
+        code = str(row[idx['證券代號']]).strip()
         if not re.fullmatch(r'\d{4}', code):
             continue
-        op, hi, lo, cl = (num(row[i]) for i in (5, 6, 7, 8))
-        shares = num(row[2])
+        op, hi, lo, cl = (num(row[idx[key]]) for key in ('開盤價', '最高價', '最低價', '收盤價'))
+        shares = num(row[idx['成交股數']])
         if min(op, hi, lo, cl) <= 0 or shares <= 0 or hi < lo:
             continue
-        sign = str(row[9]).strip()
-        change = num(row[10]) * (-1 if '-' in sign or '－' in sign else 1)
-        results.append(dict(code=code, name=str(row[1]).strip(), market='上市',
+        sign = str(row[sign_idx]).strip() if sign_idx is not None else ''
+        change = num(row[idx['漲跌價差']]) * (-1 if '-' in sign or '－' in sign else 1)
+        results.append(dict(code=code, name=str(row[idx['證券名稱']]).strip(), market='上市',
                             date=today, open=op, high=hi, low=lo, close=cl,
                             lots=shares / 1000, change=change))
     print(f'上市指定日期：{today}，{len(results)} 檔')
