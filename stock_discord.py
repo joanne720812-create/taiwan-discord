@@ -11,6 +11,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 TWSE = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'
+TWSE_DATED = 'https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?response=json&date={date}&type=ALLBUT0999'
 TPEX = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'
 TZ = ZoneInfo('Asia/Taipei')
 
@@ -66,6 +67,51 @@ def normalized(row, market):
         return None
     return dict(code=code, name=name, market=market, date=date, open=op, high=hi, low=lo, close=cl,
                 lots=shares / 1000, change=change)
+
+
+def listed_for_date(today):
+    """先讀上市快照；若尚停在前一日，改查證交所指定日期的行情。"""
+    snapshot = get_json(TWSE)
+    rows = [s for row in snapshot if (s := normalized(row, '上市')) and s['date'] == today]
+    if rows:
+        print(f'上市快照：{today}，{len(rows)} 檔')
+        return rows
+
+    last_date = iso_date(snapshot[0].get('Date', '')) if snapshot else '無資料'
+    print(f'上市快照日期 {last_date}，改查指定日期 {today}')
+    data = get_json(TWSE_DATED.format(date=today.replace('-', '')))
+    if data.get('stat') != 'OK':
+        print(f'證交所指定日期尚無資料：{data.get("stat", "未知狀態")}')
+        return []
+    reported = iso_date(data.get('date', ''))
+    if reported and reported != today:
+        print(f'證交所指定日期回傳 {reported}，略過')
+        return []
+    # MI_INDEX 的欄位順序依 fields9 / data9；從欄名確認避免 API 改版時錯讀價位。
+    fields = data.get('fields9', [])
+    records = data.get('data9', [])
+    expected = ('證券代號', '證券名稱', '成交股數', '成交筆數', '成交金額',
+                '開盤價', '最高價', '最低價', '收盤價')
+    if len(fields) < 11 or len(records) == 0 or any(k not in str(fields[i]) for i, k in enumerate(expected)):
+        raise RuntimeError('證交所 MI_INDEX 欄位變更或無個股資料，請檢查執行紀錄')
+    results = []
+    for row in records:
+        if len(row) < 11:
+            continue
+        code = str(row[0]).strip()
+        if not re.fullmatch(r'\d{4}', code):
+            continue
+        op, hi, lo, cl = (num(row[i]) for i in (5, 6, 7, 8))
+        shares = num(row[2])
+        if min(op, hi, lo, cl) <= 0 or shares <= 0 or hi < lo:
+            continue
+        sign = str(row[9]).strip()
+        change = num(row[10]) * (-1 if '-' in sign or '－' in sign else 1)
+        results.append(dict(code=code, name=str(row[1]).strip(), market='上市',
+                            date=today, open=op, high=hi, low=lo, close=cl,
+                            lots=shares / 1000, change=change))
+    print(f'上市指定日期：{today}，{len(results)} 檔')
+    return results
 
 
 def evaluate(s):
@@ -134,9 +180,12 @@ def main():
     if not args.allow_old_data and now.weekday() >= 5:
         print('非交易日，略過。')
         return
-    datasets = [(get_json(TWSE), '上市'), (get_json(TPEX), '上櫃')]
-    stocks = [s for rows, market in datasets for row in rows if (s := normalized(row, market))]
     today = now.date().isoformat()
+    listed = listed_for_date(today)
+    otc_raw = get_json(TPEX)
+    otc = [s for row in otc_raw if (s := normalized(row, '上櫃'))]
+    print(f'上櫃資料日期：{sorted({s["date"] for s in otc})[-3:]}，有效 {len(otc)} 檔')
+    stocks = listed + otc
     current = [evaluate(s) for s in stocks if s['date'] == today]
     if not current and not args.allow_old_data:
         print(f'{today} 兩市場資料尚未齊全或休市，略過推播。')
