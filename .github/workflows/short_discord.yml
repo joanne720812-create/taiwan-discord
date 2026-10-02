@@ -1,0 +1,77 @@
+name: 台股偏空前五名與盤中提醒
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: test連線測試／scan盤後選股／monitor盤中監控
+        type: choice
+        default: test
+        options: [test, scan, monitor]
+      scan_date:
+        description: 資料日期 YYYY-MM-DD；留空使用台灣今天
+        type: string
+        default: ''
+  schedule:
+    - cron: '40 9 * * 1-5'
+    - cron: '55 0 * * 1-5'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: short5-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  short5:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      STATE_DIR: state
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 安裝行情套件
+        run: python -m pip install -r requirements_swing.txt
+      - name: 恢復前次候選與通知紀錄
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const result = await github.rest.actions.listArtifactsForRepo({owner, repo, name: 'short5-state', per_page: 100});
+            const artifact = result.data.artifacts.filter(a => !a.expired).sort((a,b) => b.id - a.id)[0];
+            if (!artifact) {
+              core.info('首次執行，尚無候選紀錄');
+              return;
+            }
+            const archive = await github.rest.actions.downloadArtifact({owner, repo, artifact_id: artifact.id, archive_format: 'zip'});
+            require('fs').writeFileSync('short5-state.zip', Buffer.from(archive.data));
+      - name: 解開候選紀錄
+        run: |
+          mkdir -p state
+          if [ -f short5-state.zip ]; then
+            unzip -o short5-state.zip -d state
+          fi
+      - name: 執行選股或盤中監控
+        env:
+          MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '55 0 * * 1-5' && 'monitor' || 'scan') }}
+          SCAN_DATE: ${{ inputs.scan_date }}
+        run: |
+          if [ "$MODE" = "scan" ] && [ -n "$SCAN_DATE" ]; then
+            python short_discord.py scan --asof "$SCAN_DATE"
+          else
+            python short_discord.py "$MODE"
+          fi
+      - name: 保存候選與通知紀錄
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: short5-state
+          path: state/*.json
+          if-no-files-found: ignore
+          retention-days: 14
