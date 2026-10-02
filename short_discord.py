@@ -22,6 +22,7 @@ STATE = Path(os.getenv("STATE_DIR", "state"))
 MIN_VALUE = 100_000_000
 MIN_SHARES = 2_000_000
 MIN_SCORE = 60
+TOP_N = 10
 
 # K棒收盤距今超過35分鐘，不發訊號
 MAX_BAR_AGE = 35
@@ -564,6 +565,8 @@ def scan(asof):
             if (
                 len(df) < 60
                 or df.index[-1].date() != asof
+                or abs(float(df.iloc[-1]["Close"]) - stock["official_close"])
+                > max(0.05, stock["official_close"] * 0.001)
             ):
                 failures += 1
                 continue
@@ -596,7 +599,7 @@ def scan(asof):
         )
     )
 
-    top = results[:5]
+    top = results[:TOP_N]
 
     report = {
         "asof": asof.isoformat(),
@@ -607,7 +610,7 @@ def scan(asof):
     }
 
     lines = [
-        "📉 下一交易日壓力未突破候選｜最多5檔\n"
+        "📉 下一交易日壓力未突破候選｜最多10檔\n"
         f"資料日：{asof}\n"
         "分數是規則評分，不是下跌機率。"
     ]
@@ -625,7 +628,7 @@ def scan(asof):
 
     if not top:
         lines.append(
-            "沒有符合條件的股票，不湊滿五檔。"
+            "沒有符合條件的股票，不湊滿十檔。"
         )
 
     lines.append(
