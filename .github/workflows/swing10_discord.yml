@@ -1,1 +1,49 @@
-# taiwan-discord
+name: 波段買點前10名
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: test連線測試／scan收盤選股
+        type: choice
+        default: test
+        options: [test, scan]
+  schedule:
+    - cron: '17 8 * * 1-5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swing10-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements_swing.txt
+
+      - name: 執行選股或測試
+        env:
+          MODE: ${{ inputs.mode || 'scan' }}
+        run: python swing10_discord.py "$MODE"
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: swing10-report
+          path: state/swing_shortlist.json
+          if-no-files-found: ignore
+          retention-days: 14
