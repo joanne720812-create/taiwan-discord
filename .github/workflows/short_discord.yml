@@ -1,4 +1,4 @@
-name: 台股偏空前五名與盤中提醒
+name: 台股偏空前十名與盤中提醒
 
 on:
   workflow_dispatch:
