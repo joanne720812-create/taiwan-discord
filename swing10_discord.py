@@ -259,5 +259,5 @@ if __name__ == '__main__':
         else:
             scan(args.asof,args.dry_run)
     except Exception:
-        logging.error('執行失敗：請核對資料日期、行情連線及Secret；沒有發布新名單。')
+        logging.exception('執行失敗：請核對資料日期、行情連線及Secret；沒有發布新名單。')
         raise SystemExit(1)
