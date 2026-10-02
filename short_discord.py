@@ -26,6 +26,8 @@ TOP_N = 10
 
 # K棒收盤距今超過35分鐘，不發訊號
 MAX_BAR_AGE = 35
+MAX_SIGNALS_PER_DAY = 5
+SIGNAL_COOLDOWN_MINUTES = 15
 
 LOG = logging.getLogger("short_bot")
 
@@ -813,6 +815,27 @@ def short_signal(frame, stock, current):
     }
 
 
+def notification_allowed(signal, stock, current, events):
+    """同一根K棒不重送；每檔每天最多五次，訊號K至少相隔15分鐘。"""
+    prefix = f"{current.date()}:{stock['ticker']}"
+    key = f"{prefix}:{signal['bar_at']}"
+    prior = [
+        value for event_key, value in events.items()
+        if event_key == prefix or event_key.startswith(prefix + ":")
+    ]
+    if key in events or len(prior) >= MAX_SIGNALS_PER_DAY:
+        return False
+    bar_at = datetime.fromisoformat(signal["bar_at"])
+    for value in prior:
+        # 舊版每日一次的紀錄也納入計算；缺少時間時保守停止重送。
+        if not value.get("bar_at"):
+            return False
+        previous = datetime.fromisoformat(value["bar_at"])
+        if (bar_at - previous).total_seconds() < SIGNAL_COOLDOWN_MINUTES * 60:
+            return False
+    return True
+
+
 def monitor(once=False):
     current = now_tw()
 
@@ -918,11 +941,11 @@ def monitor(once=False):
                     )
 
                     key = (
-                        f"{current.date()}:"
-                        f"{stock['ticker']}"
+                        f"{current.date()}:{stock['ticker']}:{signal['bar_at']}"
+                        if signal else ""
                     )
 
-                    if signal and key not in events:
+                    if signal and notification_allowed(signal, stock, current, events):
                         bar_at = datetime.fromisoformat(
                             signal["bar_at"]
                         )
@@ -931,11 +954,20 @@ def monitor(once=False):
                             bar_at + timedelta(minutes=5)
                         )
 
+                        event_prefix = f"{current.date()}:{stock['ticker']}"
+                        notification_number = 1 + sum(
+                            event_key == event_prefix
+                            or event_key.startswith(event_prefix + ":")
+                            for event_key in events
+                        )
+
                         send_discord(
                             "📉 做空條件成立"
                             "（延遲行情提醒）\n"
                             f"{stock['name']} "
                             f"{stock['code']}\n"
+                            "本日通知："
+                            f"{notification_number}/{MAX_SIGNALS_PER_DAY}\n"
                             f"規則分數：{stock['score']}\n"
                             f"5分K起點：{bar_at:%H:%M}\n"
                             f"K棒收盤：{bar_end:%H:%M}\n"
