@@ -180,12 +180,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dry-run', action='store_true', help='預覽 JSON，不送 Discord')
     parser.add_argument('--allow-old-data', action='store_true', help='僅供資料格式測試；允許舊交易日')
-    args = parser.parse_args()
+    parser.add_argument('--date', type=lambda value: datetime.strptime(value, '%Y-%m-%d').date().isoformat(), help='補發指定資料日'); args = parser.parse_args()
     now = datetime.now(TZ)
     if not args.allow_old_data and now.weekday() >= 5:
         print('非交易日，略過。')
         return
-    today = now.date().isoformat()
+    today = args.date if args.allow_old_data and args.date else now.date().isoformat()
     listed = listed_for_date(today)
     otc_raw = get_json(TPEX)
     otc = [s for row in otc_raw if (s := normalized(row, '上櫃'))]
