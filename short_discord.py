@@ -24,8 +24,8 @@ MIN_SHARES = 2_000_000
 MIN_SCORE = 60
 TOP_N = 10
 
-# K棒收盤距今超過35分鐘，不發訊號
-MAX_BAR_AGE = 35
+# K棒收盤距今超過20分鐘，不發訊號
+MAX_BAR_AGE = 20
 MAX_SIGNALS_PER_DAY = 5
 SIGNAL_COOLDOWN_MINUTES = 15
 
@@ -668,7 +668,7 @@ def completed_bars(frame, current):
         and clock(9) <= timestamp.time() < clock(13, 30)
         and (
             timestamp.to_pydatetime()
-            + timedelta(minutes=5)
+            + timedelta(minutes=1)
             <= current
         )
         for timestamp in df.index
@@ -704,14 +704,14 @@ def short_signal(frame, stock, current):
     if any(
         (
             df.index[index] - df.index[index - 1]
-        ).total_seconds() != 300
+        ).total_seconds() != 60
         for index in range(1, len(df))
     ):
         return None
 
     bar_end = (
         df.index[-1].to_pydatetime()
-        + timedelta(minutes=5)
+        + timedelta(minutes=1)
     )
 
     age = (
@@ -775,7 +775,7 @@ def short_signal(frame, stock, current):
         and last["Close"] < first["Low"]
     )
 
-    # 使用5分K典型價格估算當日VWAP。
+    # 使用1分K典型價格估算當日VWAP。
     typical = (
         df["High"] + df["Low"] + df["Close"]
     ) / 3
@@ -836,6 +836,50 @@ def notification_allowed(signal, stock, current, events):
     return True
 
 
+
+def long_candidates(asof):
+    """沿用盤後做多TOP10排行，核對兩市場同一資料日。"""
+    import stock_discord as ranking
+    listed = ranking.listed_for_date(asof.isoformat())
+    otc = [item for row in ranking.get_json(ranking.TPEX)
+           if (item := ranking.normalized(row, "上櫃")) and item["date"] == asof.isoformat()]
+    current = [ranking.evaluate(item) for item in listed + otc
+               if item["date"] == asof.isoformat() and re.fullmatch(r"[1-9]\d{3}", item["code"])]
+    if {item["market"] for item in current} != {"上市", "上櫃"}:
+        raise RuntimeError("做多名單兩市場日期不完整")
+    top = sorted((item for item in current if item["score"] >= 60 and item["pct"] > 0),
+                 key=lambda item: (item["score"], item["pct"], item["lots"]), reverse=True)[:10]
+    return [{**item, "ticker": item["code"] + (".TW" if item["market"] == "上市" else ".TWO"),
+             "direction": "long"} for item in top]
+
+
+def long_signal(frame, stock, current):
+    """完成前五根1分K後，放量突破開盤區間並站上VWAP。"""
+    df = completed_bars(frame, current)
+    if len(df) < 6 or df.index[0].time() != clock(9):
+        return None
+    if any((df.index[i] - df.index[i-1]).total_seconds() != 60 for i in range(1, len(df))):
+        return None
+    age = (current - (df.index[-1].to_pydatetime() + timedelta(minutes=1))).total_seconds() / 60
+    if not 0 <= age <= MAX_BAR_AGE or (df["Volume"] <= 0).any():
+        return None
+    if df.iloc[0]["Open"] >= stock["close"] * 1.03:
+        return None
+    opening_high = float(df.iloc[:5]["High"].max())
+    last, previous = df.iloc[-1], df.iloc[-2]
+    vwap = float((((df["High"] + df["Low"] + df["Close"]) / 3) * df["Volume"]).sum() / df["Volume"].sum())
+    volume_base = float(df.iloc[-6:-1]["Volume"].mean())
+    price = float(last["Close"])
+    stop = float(df.iloc[-3:]["Low"].min())
+    if not (previous["Close"] <= opening_high < price and price > last["Open"]
+            and price > vwap and price > stock["close"]
+            and last["Volume"] >= volume_base * 1.3
+            and 0 < 1 - stop / price <= 0.015):
+        return None
+    return {"price": price, "stop": stop, "vwap": vwap, "resistance": opening_high,
+            "bar_at": df.index[-1].isoformat(), "age_minutes": round(age, 1)}
+
+
 def monitor(once=False):
     current = now_tw()
 
@@ -850,7 +894,7 @@ def monitor(once=False):
 
     shortlist = load("shortlist.json", {})
 
-    if not shortlist or not shortlist.get("stocks"):
+    if not shortlist:
         send_discord(
             "⚠️ 沒有偏空候選名單。\n"
             "請先執行scan，確認有合格股票。"
@@ -881,7 +925,8 @@ def monitor(once=False):
         )
         return
 
-    stocks = shortlist["stocks"]
+    stocks = [{**item, "direction": "short"} for item in shortlist["stocks"]]
+    stocks += long_candidates(asof)
     events = load("events.json", {})
 
     earliest = (
@@ -899,10 +944,10 @@ def monitor(once=False):
     )
 
     send_discord(
-        f"🔎 偏空監控啟動｜{current:%Y-%m-%d %H:%M}\n"
+        f"🔎 做多＋做空1分K監控啟動｜{current:%Y-%m-%d %H:%M}\n"
         f"候選資料日：{asof}\n"
         f"{names}\n"
-        "每60秒檢查5分鐘K，行情可能延遲。\n"
+        "每60秒檢查1分鐘K，行情可能延遲。\n"
         "訊號是條件提醒，不是立即下單指令。"
     )
 
@@ -918,11 +963,8 @@ def monitor(once=False):
         if current.time() >= clock(9):
             try:
                 data = download(
-                    [
-                        stock["ticker"]
-                        for stock in stocks
-                    ],
-                    "5m",
+                    sorted({stock["ticker"] for stock in stocks}),
+                    "1m",
                     "5d",
                 )
 
@@ -936,25 +978,24 @@ def monitor(once=False):
                     if not bars.empty:
                         seen_today = True
 
-                    signal = short_signal(
-                        df, stock, current
-                    )
+                    signal = (long_signal if stock["direction"] == "long" else short_signal)(df, stock, current)
+                    event_stock = {**stock, "ticker": stock["ticker"] + ":" + stock["direction"]}
 
                     key = (
-                        f"{current.date()}:{stock['ticker']}:{signal['bar_at']}"
+                        f"{current.date()}:{event_stock['ticker']}:{signal['bar_at']}"
                         if signal else ""
                     )
 
-                    if signal and notification_allowed(signal, stock, current, events):
+                    if signal and notification_allowed(signal, event_stock, current, events):
                         bar_at = datetime.fromisoformat(
                             signal["bar_at"]
                         )
 
                         bar_end = (
-                            bar_at + timedelta(minutes=5)
+                            bar_at + timedelta(minutes=1)
                         )
 
-                        event_prefix = f"{current.date()}:{stock['ticker']}"
+                        event_prefix = f"{current.date()}:{event_stock['ticker']}"
                         notification_number = 1 + sum(
                             event_key == event_prefix
                             or event_key.startswith(event_prefix + ":")
@@ -962,14 +1003,14 @@ def monitor(once=False):
                         )
 
                         send_discord(
-                            "📉 做空條件成立"
-                            "（延遲行情提醒）\n"
+                            ("📈 做多買進條件成立" if stock["direction"] == "long" else "📉 賣空條件成立")
+                            + "（延遲行情提醒）\n"
                             f"{stock['name']} "
                             f"{stock['code']}\n"
                             "本日通知："
                             f"{notification_number}/{MAX_SIGNALS_PER_DAY}\n"
                             f"規則分數：{stock['score']}\n"
-                            f"5分K起點：{bar_at:%H:%M}\n"
+                            f"1分K起點：{bar_at:%H:%M}\n"
                             f"K棒收盤：{bar_end:%H:%M}\n"
                             f"觀察價：{signal['price']:.2f}\n"
                             "型態失效參考："
@@ -977,10 +1018,10 @@ def monitor(once=False):
                             "壓力："
                             f"{signal['resistance']:.2f}\n"
                             f"VWAP：約{signal['vwap']:.2f}\n"
-                            "條件：放量測壓留上影、"
-                            "收盤未突破壓力；"
-                            "後2根量縮收跌，"
-                            "跌破測壓K低點且低於VWAP。\n"
+                            + ("條件：放量突破前5根1分K高點，站上VWAP與前收。\n"
+                               if stock["direction"] == "long" else
+                               "條件：測壓失敗，後2根量縮收跌，跌破測壓K低點及VWAP。\n")
+                            +
                             f"推播時間：{current:%H:%M:%S}\n"
                             "K棒收盤距今："
                             f"{signal['age_minutes']:.1f}分\n"
@@ -1055,7 +1096,8 @@ def main():
 
     if args.mode == "test":
         send_discord(
-            "✅ 台股偏空Discord測試成功。\n"
+            "✅ 做多＋做空1分K推播連線測試成功。\n"
+            "平日台灣08:55起執行、09:00至13:30監控；每60秒檢查已收盤1分K。行情可能延遲，排程可能晚啟動。\n"
             "這是連線測試，"
             "尚未產生名單或做空訊號。"
         )
