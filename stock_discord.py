@@ -202,7 +202,7 @@ def main():
     if markets != {'上市', '上櫃'}:
         raise RuntimeError(f'資料不同步或缺少市場：{markets}；不發送不完整排行')
     selected = sorted((s for s in current if s['score'] >= 60 and s['pct'] > 0),
-                      key=lambda s: (s['score'], s['pct'], s['lots']), reverse=True)[:5]
+                      key=lambda s: (s['score'], s['pct'], s['lots']), reverse=True)[:10]
     if not selected:
         print('今天沒有達標股票。')
         return
