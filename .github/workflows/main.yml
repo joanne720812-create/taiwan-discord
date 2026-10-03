@@ -1,19 +1,47 @@
-name: 台股盤後強勢股推播
+name: 台股盤後做多強勢股 TOP 10 推播
 
 on:
   schedule:
     - cron: '17 8 * * 1-5'
   workflow_dispatch:
+    inputs:
+      test_webhook:
+        description: '只發送 Discord 測試通知（不發股票名單）'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   send:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: 推播台股排行
+      - name: 測試 Discord 推播
+        if: ${{ inputs.test_webhook }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+          url = os.environ.get('DISCORD_WEBHOOK_URL', '').strip()
+          if not url.startswith('https://discord.com/api/webhooks/'):
+              raise RuntimeError('請設定 DISCORD_WEBHOOK_URL')
+          payload = {'content': '✅ 盤後做多強勢股 TOP 10 推播連線測試成功。\n排程：平日台灣時間 16:17 起執行，可能延後。休市或資料不齊時略過；符合條件不足十檔時依實際支數。', 'allowed_mentions': {'parse': []}}
+          request = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode('utf-8'), headers={'Content-Type': 'application/json', 'User-Agent': 'TaiwanStockDiscord/1.0'}, method='POST')
+          with urllib.request.urlopen(request, timeout=30) as response:
+              if response.status not in (200, 204):
+                  raise RuntimeError(f'Discord HTTP {response.status}')
+          print('Discord 測試通知已成功送出')
+          PY
+      - name: 推播台股前十名排行
+        if: ${{ !inputs.test_webhook }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python stock_discord.py
