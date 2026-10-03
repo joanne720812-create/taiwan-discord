@@ -139,11 +139,13 @@ def sweep(report, events):
     for stock, df in batches(report["pool"], "5m", "5d"):
         if not df.empty:
             valid += 1
-        hit = signal(df, stock, base.now_tw(), asof)
-        if hit:
-            key = f'{hit["ticker"]}:{hit["bar_end"]}'
-            if key not in events["sent"]:
-                found.append((key, hit))
+        # Recheck recent candles so a slow download sweep cannot skip a cross.
+        for end_index in range(max(22, len(df) - 5), len(df) + 1):
+            hit = signal(df.iloc[:end_index], stock, base.now_tw(), asof)
+            if hit:
+                key = f'{hit["ticker"]}:{hit["bar_end"]}'
+                if key not in events["sent"]:
+                    found.append((key, hit))
     found.sort(key=lambda p: (-p[1]["volume_ratio"], -p[1]["value"], p[1]["ticker"]))
     # Deliver every new match in groups of ten; never drop matches due to rank.
     for start in range(0, len(found), 10):
@@ -192,8 +194,8 @@ def monitor():
     while base.now_tw().time() < clock(13, 50):
         current = base.now_tw()
         if current.time() >= clock(9, 5) and current >= next_check:
+            next_check = current + timedelta(minutes=5)
             sweep(report, events)
-            next_check = base.now_tw() + timedelta(minutes=5)
         time.sleep(60)
 
 
