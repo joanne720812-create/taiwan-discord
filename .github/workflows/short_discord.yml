@@ -1,4 +1,4 @@
-name: 台股偏空前十名與盤中提醒
+name: 台股做多做空1分K盤中推播
 
 on:
   workflow_dispatch:
@@ -62,6 +62,19 @@ jobs:
           MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '55 0 * * 1-5' && 'monitor' || 'scan') }}
           SCAN_DATE: ${{ inputs.scan_date }}
         run: |
+          python -m py_compile short_discord.py stock_discord.py
+          if [ "$MODE" = "test" ]; then
+            python - <<'PY'
+          import short_discord as bot
+          from datetime import date
+          report = bot.load("shortlist.json", {})
+          if not report.get("asof"):
+              raise RuntimeError("缺少候選名單，請先執行scan")
+          asof = date.fromisoformat(report["asof"])
+          longs = bot.long_candidates(asof)
+          print(f"候選驗證成功：資料日{asof}，做多{len(longs)}檔、做空{len(report.get('stocks', []))}檔；1分K")
+          PY
+          fi
           if [ "$MODE" = "scan" ] && [ -n "$SCAN_DATE" ]; then
             python short_discord.py scan --asof "$SCAN_DATE"
           else
@@ -75,3 +88,4 @@ jobs:
           path: state/*.json
           if-no-files-found: ignore
           retention-days: 14
+
