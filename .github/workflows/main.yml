@@ -10,6 +10,11 @@ on:
         required: false
         type: boolean
         default: false
+      resend_date:
+        description: "補發資料日 YYYY-MM-DD（留空則正常盤後推播）"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -44,4 +49,10 @@ jobs:
         if: ${{ !inputs.test_webhook }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python stock_discord.py
+          RESEND_DATE: ${{ inputs.resend_date }}
+        run: |
+          if [ -n "$RESEND_DATE" ]; then
+            python stock_discord.py --allow-old-data --date "$RESEND_DATE"
+          else
+            python stock_discord.py
+          fi
