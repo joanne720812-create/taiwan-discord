@@ -1,8 +1,13 @@
 """Daily Taiwan liquid-stock refresh + confirmed 5m season-MA breakout alerts."""
 import argparse
+import json
 import logging
 import math
+import os
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, time as clock
 
 import pandas as pd
@@ -26,6 +31,64 @@ def level_text(stock):
         return "撐壓待重新選股更新"
     return (f'壓力(NH){stock["resistance"]:.2f}｜交界(CDP){stock["pivot"]:.2f}｜'
             f'支撐(NL){stock["support"]:.2f}（基準{stock["levels_date"]}）')
+
+
+def card_payload(title, stocks, kind, note=""):
+    if not 1 <= len(stocks) <= 10:
+        raise ValueError("每則卡片通知需包含1至10檔股票")
+    embeds = []
+    for rank, stock in enumerate(stocks, 1):
+        if kind == "daily":
+            description = (f'**收盤 {stock["official_close"]:g}**\n'
+                           f'日量比 {stock["daily_relvol"]:.2f} 倍｜日RSI {stock["daily_rsi"]:.1f}')
+        else:
+            bar = datetime.fromisoformat(stock["bar_end"])
+            description = (f'**5分K訊號收盤 {stock["close"]:g}**｜{bar.strftime("%m/%d %H:%M")}\n'
+                           f'季線 {stock["ma60"]:.2f}｜量比 {stock["volume_ratio"]:.2f} 倍｜RSI {stock["rsi5"]:.1f}')
+        fields = [dict(name=label, value=f'**{stock[key]:.2f}**', inline=True)
+                  for label, key in [("壓力 NH", "resistance"), ("交界 CDP", "pivot"), ("支撐 NL", "support")]]
+        embeds.append(dict(title=f'#{rank}｜{stock["code"]} {stock["name"]}',
+                           color=0xE74C3C, description=description, fields=fields,
+                           footer=dict(text=f'撐壓基準 {stock["levels_date"]}｜CDP計算參考，非下單指令')))
+    payload = dict(content=title + ("\n" + note if note else ""), embeds=embeds,
+                   allowed_mentions=dict(parse=[]))
+    size = sum(len(e["title"]) + len(e["description"]) + len(e["footer"]["text"]) +
+               sum(len(f["name"]) + len(f["value"]) for f in e["fields"]) for e in embeds)
+    if len(payload["content"]) > 2000 or size > 6000:
+        raise ValueError("卡片通知超出Discord字數限制")
+    return payload
+
+
+def send_cards(title, stocks, kind, note=""):
+    payload = card_payload(title, stocks, kind, note)
+    hook = os.getenv("DISCORD_WEBHOOK_URL", "")
+    parsed = urllib.parse.urlparse(hook)
+    if parsed.scheme != "https" or parsed.hostname not in {"discord.com", "discordapp.com"} or not parsed.path.startswith("/api/webhooks/"):
+        raise RuntimeError("請設定DISCORD_WEBHOOK_URL")
+    separator = "&" if parsed.query else "?"
+    body = json.dumps(payload, ensure_ascii=False).encode()
+    for attempt in range(3):
+        try:
+            request = urllib.request.Request(hook + separator + "wait=true", data=body,
+                                             headers={"Content-Type": "application/json", "User-Agent": "rising5-cards"})
+            with urllib.request.urlopen(request, timeout=20) as response:
+                message = json.load(response)
+            count = len(message.get("embeds", []))
+            if count != len(stocks):
+                raise RuntimeError("Discord回傳卡片數量不符")
+            LOG.info("Discord cards accepted: %s stock cards", count)
+            return
+        except urllib.error.HTTPError as error:
+            if error.code == 429 and attempt < 2:
+                try:
+                    delay = float(json.load(error).get("retry_after", 2))
+                except (ValueError, TypeError):
+                    delay = 2
+                time.sleep(min(max(delay, 1), 30))
+                continue
+            raise RuntimeError(f"Discord卡片發送失敗：HTTP {error.code}") from None
+        except (urllib.error.URLError, TimeoutError):
+            raise RuntimeError("Discord連線失敗，卡片發送結果未確認") from None
 
 
 def rsi(series, length=14):
@@ -113,11 +176,13 @@ def scan(latest=False, notify=True):
                   top10=candidates[:10], total=len(universe), failures=failures)
     base.save(STATE_FILE, report)
     if notify:
-        rows = [f'{i}. {s["code"]} {s["name"]}｜收盤{s["official_close"]:g}｜量比{s["daily_relvol"]:.2f}｜日RSI{s["daily_rsi"]:.1f}\n{level_text(s)}' for i, s in enumerate(report["top10"], 1)]
-        base.send_discord("📋 起漲候選自動更新｜資料日 " + asof.isoformat() + "\n" +
-                          ("\n".join(rows) if rows else "目前沒有同時符合日線預選條件的股票，不硬湊10檔。") +
-                          f"\n上市＋上櫃，前日量≥2000張、金額≥1億元、股價≥10元；監控{len(pool)}檔有效行情。\n" +
-                          "日線預選：季線上方10%內、量比≥1.5、RSI50–70。盤中會監控整個流動性合格池，新符合5分K訊號也會通知。\n延遲行情觀察；非保證上漲，不自動下單。")
+        title = "📋 起漲候選自動更新｜資料日 " + asof.isoformat()
+        note = (f"上市＋上櫃，前日量≥2000張、金額≥1億元、股價≥10元；監控{len(pool)}檔有效行情。\n"
+                "日線預選：季線上方10%內、量比≥1.5、RSI50–70。盤中監控整個合格池，新股票符合也通知。\n延遲行情觀察；非保證上漲，不自動下單。")
+        if report["top10"]:
+            send_cards(title, report["top10"], "daily", note)
+        else:
+            base.send_discord(title + "\n目前沒有同時符合日線預選條件的股票，不硬湊10檔。\n" + note)
     LOG.info("Daily scan complete: %s, pool=%s, top10=%s, coverage=%.1f%%", asof, len(pool), len(report["top10"]), coverage * 100)
     return report
 
@@ -170,9 +235,8 @@ def sweep(report, events):
     # Deliver every new match in groups of ten; never drop matches due to rank.
     for start in range(0, len(found), 10):
         group = found[start:start + 10]
-        rows = [f'{s["code"]} {s["name"]}｜{datetime.fromisoformat(s["bar_end"]).strftime("%H:%M")}收盤{s["close"]:g}｜季線{s["ma60"]:.2f}｜量比{s["volume_ratio"]:.2f}｜RSI{s["rsi5"]:.1f}\n{level_text(s)}' for _, s in group]
-        base.send_discord("🔔 新起漲條件符合｜5分K收盤確認\n" + "\n".join(rows) +
-                          "\n新突破前一交易日60日季線＋前20根5分K均量1.5倍＋RSI14<70。\n雲端自動換股監控；可能延遲，不是下單指令。")
+        send_cards("🔔 新起漲條件符合｜5分K收盤確認", [s for _, s in group], "signal",
+                   "新突破前一交易日60日季線＋前20根5分K均量1.5倍＋RSI14<70。\n雲端自動換股監控；可能延遲，不是下單指令。")
         for key, s in group:
             events["sent"].append(key)
             events["matched"][s["ticker"]] = s
@@ -180,9 +244,11 @@ def sweep(report, events):
     top = sorted(events["matched"].values(), key=lambda s: (-s["volume_ratio"], -s["value"], s["ticker"]))[:10]
     codes = [s["ticker"] for s in top]
     if codes != events.get("top_codes", []) and top:
-        base.send_discord("📌 今日5分K符合訊號名單更新｜最多10檔\n" + "\n".join(
-            f'{i}. {s["code"]} {s["name"]}｜訊號收盤{s["close"]:g}｜量比{s["volume_ratio"]:.2f}\n{level_text(s)}' for i, s in enumerate(top, 1)) +
-            "\n這是今日曾符合的訊號排行，不表示此刻仍符合；TradingView固定名單不會同步換股。")
+        # Restore levels if older notification state predates the card format.
+        levels_by_ticker = {s["ticker"]: s for s in report["pool"]}
+        top = [dict(levels_by_ticker.get(s["ticker"], {}), **s) for s in top]
+        send_cards("📌 今日5分K符合訊號名單更新｜最多10檔", top, "signal",
+                   "這是今日曾符合的訊號排行，不表示此刻仍符合；TradingView固定名單不會同步換股。")
         events["top_codes"] = codes
         base.save(EVENT_FILE, events)
     LOG.info("5m sweep: valid=%s/%s, new signals=%s", valid, len(report["pool"]), len(found))
