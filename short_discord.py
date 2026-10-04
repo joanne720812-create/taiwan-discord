@@ -118,7 +118,7 @@ def send_discord(content):
 
     body = json.dumps(
         {
-            "content": content[:1900],
+            **({"content": content[:1900]} if isinstance(content, str) else content),
             "allowed_mentions": {"parse": []},
         },
         ensure_ascii=False,
@@ -140,8 +140,12 @@ def send_discord(content):
             with urllib.request.urlopen(
                 req, timeout=20
             ) as resp:
-                resp.read()
-
+                message = json.load(resp)
+            if isinstance(content, dict):
+                expected = len(content.get("embeds", []))
+                if len(message.get("embeds", [])) != expected:
+                    raise RuntimeError("Discord卡片數量未確認")
+                LOG.info("Discord cards accepted: %s", expected)
             return
 
         except urllib.error.HTTPError as error:
@@ -503,6 +507,7 @@ def daily_score(frame, stock, asof):
         **stock,
         "score": score,
         "close": close,
+        **cdp_levels(high.iloc[-1], low.iloc[-1], close, asof),
         "low": float(low.iloc[-1]),
         "high": float(high.iloc[-1]),
         "resistance": resistance,
@@ -641,7 +646,14 @@ def scan(asof):
         "尚未核對券商可空額度與交易限制。"
     )
 
-    send_discord("\n\n".join(lines))
+    if top:
+        send_embeds(f"📉 下一交易日偏空候選｜資料日 {asof}",
+            [stock_card(item, f"#{rank} 偏空候選", f"前收 **{item['close']:.2f}**｜規則分數 {item['score']}\n"
+                + "、".join(item['reasons'][:3]), "short",
+                [{"name": "策略壓力（前20交易日高點）", "value": f"{item['resistance']:.2f}", "inline": True}])
+             for rank, item in enumerate(top, 1)])
+    else:
+        send_discord("\n\n".join(lines))
     save("shortlist.json", report)
 
 
@@ -880,6 +892,139 @@ def long_signal(frame, stock, current):
             "bar_at": df.index[-1].isoformat(), "age_minutes": round(age, 1)}
 
 
+
+def cdp_levels(high, low, close, asof):
+    high, low, close = float(high), float(low), float(close)
+    if not all(math.isfinite(v) and v > 0 for v in (high, low, close)) or not low <= close <= high:
+        raise ValueError("CDP基準行情無效")
+    pivot = (high + low + 2 * close) / 4
+    return {"cdp_resistance": 2 * pivot - low, "pivot": pivot,
+            "support": 2 * pivot - high, "levels_date": str(asof)}
+
+
+def attach_levels(stocks, asof):
+    # 以候選資料日的完整日K計算下一交易日CDP；不使用當日未完成日K。
+    if not stocks:
+        return []
+    data = download(sorted({item["ticker"] for item in stocks}), "1d", "6mo")
+    result = []
+    for stock in stocks:
+        df = frame_for(data, stock["ticker"])
+        df = df[[stamp.date() <= asof for stamp in df.index]]
+        if df.empty or df.index[-1].date() != asof:
+            raise RuntimeError("缺少前一交易日CDP基準，停止監控")
+        row = df.iloc[-1]
+        close = float(row["Close"])
+        if abs(close - stock["close"]) > max(0.05, close * 0.001):
+            raise RuntimeError("CDP基準收盤核對失敗")
+        result.append({**stock, **cdp_levels(row["High"], row["Low"], close, asof)})
+    return result
+
+
+def crossing_signal(frame, stock, current):
+    df = completed_bars(frame, current)
+    if len(df) < 2:
+        return None
+    if (df.index[-1] - df.index[-2]).total_seconds() != 60:
+        return None
+    bar_end = df.index[-1].to_pydatetime() + timedelta(minutes=1)
+    age = (current - bar_end).total_seconds() / 60
+    if not 0 <= age <= MAX_BAR_AGE or (df.iloc[-2:]["Volume"] <= 0).any():
+        return None
+    previous, price = map(float, df.iloc[-2:]["Close"])
+    crossed = []
+    for name, field in (("壓力 NH", "cdp_resistance"), ("交界 CDP", "pivot"), ("支撐 NL", "support")):
+        level = stock[field]
+        if previous <= level < price:
+            crossed.append({"name": name, "level": level, "direction": "up"})
+        elif previous >= level > price:
+            crossed.append({"name": name, "level": level, "direction": "down"})
+    if not crossed:
+        return None
+    return {"price": price, "previous": previous, "crossed": crossed,
+            "bar_at": df.index[-1].isoformat(), "age_minutes": round(age, 1)}
+
+
+def level_fields(stock):
+    return [{"name": name, "value": f"**{stock[field]:.2f}**", "inline": True}
+            for name, field in (("壓力 NH", "cdp_resistance"), ("交界 CDP", "pivot"), ("支撐 NL", "support"))]
+
+
+def stock_card(stock, title, description, direction, extra=None, demo=False):
+    return {"title": f"{title}｜{stock['code']} {stock['name']}",
+            "description": description, "color": 0xE74C3C if direction in ("up", "long") else 0x2ECC71,
+            "fields": level_fields(stock) + (extra or []),
+            "footer": {"text": ("示範數值，非真實行情或交易訊號" if demo else
+                f"CDP基準 {stock['levels_date']}｜延遲行情，條件提醒")}}
+
+
+def send_embeds(title, embeds):
+    if not 1 <= len(embeds) <= 10:
+        raise ValueError("卡片數量需介於1到10")
+    characters = sum(len(e.get("title", "")) + len(e.get("description", ""))
+        + len(e.get("footer", {}).get("text", ""))
+        + sum(len(f["name"]) + len(f["value"]) for f in e.get("fields", [])) for e in embeds)
+    if characters > 6000 or len(title) > 2000:
+        raise ValueError("Discord卡片文字過長")
+    send_discord({"content": title, "embeds": embeds})
+
+
+def send_crossing(stock, signal, demo=False):
+    direction = signal["crossed"][0]["direction"]
+    lines = [f"{'🔴 向上穿越' if item['direction'] == 'up' else '🟢 向下穿越'} **{item['name']} {item['level']:.2f}**"
+             for item in signal["crossed"]]
+    end = datetime.fromisoformat(signal["bar_at"]) + timedelta(minutes=1)
+    description = (f"前根收盤 {signal['previous']:.2f} → 本根收盤 **{signal['price']:.2f}**\n"
+                   + "\n".join(lines) + f"\n1分K收盤：{end:%Y-%m-%d %H:%M}\n"
+                   + ("格式示範，未觸發真實穿越。" if demo else
+                      f"行情距今 {signal['age_minutes']:.1f} 分；價位穿越提醒。"))
+    send_embeds("🧪 1分K卡片格式測試" if demo else "🔔 1分K價位穿越",
+                [stock_card(stock, "示範上穿" if demo and direction == "up" else
+                    "示範下穿" if demo else "上穿提醒" if direction == "up" else "下穿提醒",
+                    description, direction, demo=demo)])
+
+
+def send_strategy(stock, signal, current, notification_number):
+    end = datetime.fromisoformat(signal["bar_at"]) + timedelta(minutes=1)
+    long = stock["direction"] == "long"
+    description = (f"觀察價 **{signal['price']:.2f}**｜1分K收盤 {end:%H:%M}\n"
+        + ("放量上穿開盤前5根高點，站上VWAP與前收。" if long else
+           "測壓失敗，後2根量縮收跌，下穿測壓K低點並位於VWAP下方。")
+        + f"\n本日通知 {notification_number}/{MAX_SIGNALS_PER_DAY}｜規則分數 {stock['score']}"
+        + f"\n行情距今 {signal['age_minutes']:.1f}分｜推播 {current:%H:%M:%S}")
+    extra = [{"name": "策略壓力（開盤5分鐘高點）" if long else "策略壓力（前20交易日高點）",
+              "value": f"{signal['resistance']:.2f}", "inline": True},
+             {"name": "VWAP", "value": f"{signal['vwap']:.2f}", "inline": True},
+             {"name": "型態失效參考", "value": f"{signal['stop']:.2f}", "inline": True}]
+    send_embeds("📈 做多條件成立" if long else "📉 做空條件成立",
+                [stock_card(stock, "做多1分K" if long else "做空1分K", description,
+                            stock["direction"], extra)])
+
+
+def send_monitor_cards(stocks, asof):
+    for direction in ("long", "short"):
+        selected = [item for item in stocks if item["direction"] == direction]
+        if selected:
+            send_embeds(f"🔎 {'做多' if direction == 'long' else '做空'}1分K監控名單｜資料日 {asof}",
+                [stock_card(item, f"#{rank}", f"前收 **{item['close']:.2f}**｜規則分數 {item['score']}\n"
+                    "監控壓力／交界／支撐的上穿與下穿，及原有策略條件。", direction)
+                 for rank, item in enumerate(selected, 1)])
+
+
+def test_cards():
+    send_embeds("✅ 做多＋做空1分K卡片連線測試", [{
+        "title": "卡片格式已啟用", "color": 0x5865F2,
+        "description": "平日台灣08:55起執行，09:00至13:30监控。每60秒檢查已收盤1分K。\n"
+            "上穿：紅色；下穿：綠色。每張股票卡片附壓力NH、交界CDP、支撐NL。\n"
+            "行情可能延遲、排程可能晚啟動。以下是示範數值，未產生真實訊號。"}])
+    stock = {"code": "示範", "name": "格式測試", **cdp_levels(110, 90, 100, "示範")}
+    for previous, price in ((99, 101), (101, 99)):
+        signal = {"previous": previous, "price": price, "age_minutes": 0,
+                  "bar_at": now_tw().isoformat(), "crossed": [{"name": "交界 CDP", "level": 100,
+                       "direction": "up" if price > previous else "down"}]}
+        send_crossing(stock, signal, demo=True)
+
+
 def monitor(once=False):
     current = now_tw()
 
@@ -927,6 +1072,7 @@ def monitor(once=False):
 
     stocks = [{**item, "direction": "short"} for item in shortlist["stocks"]]
     stocks += long_candidates(asof)
+    stocks = attach_levels(stocks, asof)
     events = load("events.json", {})
 
     earliest = (
@@ -951,8 +1097,12 @@ def monitor(once=False):
         "訊號是條件提醒，不是立即下單指令。"
     )
 
+    send_monitor_cards(stocks, asof)
+
     seen_today = False
     failures = 0
+    crossings = load("crossings.json", {})
+    crossings = {key: value for key, value in crossings.items() if key[:10] >= earliest}
 
     while True:
         current = now_tw()
@@ -978,6 +1128,14 @@ def monitor(once=False):
                     if not bars.empty:
                         seen_today = True
 
+                    crossing = crossing_signal(df, stock, current)
+                    if crossing:
+                        cross_key = f"{current.date()}:{stock['ticker']}:{crossing['bar_at']}"
+                        if cross_key not in crossings:
+                            send_crossing(stock, crossing)
+                            crossings[cross_key] = crossing
+                            save("crossings.json", crossings)
+
                     signal = (long_signal if stock["direction"] == "long" else short_signal)(df, stock, current)
                     event_stock = {**stock, "ticker": stock["ticker"] + ":" + stock["direction"]}
 
@@ -1002,32 +1160,7 @@ def monitor(once=False):
                             for event_key in events
                         )
 
-                        send_discord(
-                            ("📈 做多買進條件成立" if stock["direction"] == "long" else "📉 賣空條件成立")
-                            + "（延遲行情提醒）\n"
-                            f"{stock['name']} "
-                            f"{stock['code']}\n"
-                            "本日通知："
-                            f"{notification_number}/{MAX_SIGNALS_PER_DAY}\n"
-                            f"規則分數：{stock['score']}\n"
-                            f"1分K起點：{bar_at:%H:%M}\n"
-                            f"K棒收盤：{bar_end:%H:%M}\n"
-                            f"觀察價：{signal['price']:.2f}\n"
-                            "型態失效參考："
-                            f"{signal['stop']:.2f}\n"
-                            "壓力："
-                            f"{signal['resistance']:.2f}\n"
-                            f"VWAP：約{signal['vwap']:.2f}\n"
-                            + ("條件：放量突破前5根1分K高點，站上VWAP與前收。\n"
-                               if stock["direction"] == "long" else
-                               "條件：測壓失敗，後2根量縮收跌，跌破測壓K低點及VWAP。\n")
-                            +
-                            f"推播時間：{current:%H:%M:%S}\n"
-                            "K棒收盤距今："
-                            f"{signal['age_minutes']:.1f}分\n"
-                            "請核對券商現價、"
-                            "可空額度及停損，再決定是否交易。"
-                        )
+                        send_strategy(stock, signal, current, notification_number)
 
                         events[key] = signal
                         save("events.json", events)
@@ -1095,12 +1228,7 @@ def main():
     args = parser.parse_args()
 
     if args.mode == "test":
-        send_discord(
-            "✅ 做多＋做空1分K推播連線測試成功。\n"
-            "平日台灣08:55起執行、09:00至13:30監控；每60秒檢查已收盤1分K。行情可能延遲，排程可能晚啟動。\n"
-            "這是連線測試，"
-            "尚未產生名單或做空訊號。"
-        )
+        test_cards()
 
     elif args.mode == "scan":
         asof = (
@@ -1125,3 +1253,4 @@ if __name__ == "__main__":
             "未輸出敏感錯誤內容。"
         )
         raise SystemExit(1)
+
