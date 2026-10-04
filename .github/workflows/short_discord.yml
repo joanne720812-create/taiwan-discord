@@ -72,6 +72,10 @@ jobs:
               raise RuntimeError("缺少候選名單，請先執行scan")
           asof = date.fromisoformat(report["asof"])
           longs = bot.long_candidates(asof)
+          stocks = [{**item, "direction": "short"} for item in report.get("stocks", [])] + longs
+          stocks = bot.attach_levels(stocks, asof)
+          bot.send_monitor_cards(stocks, asof)
+          print(f"CDP基準核對成功：{len(stocks)}檔，卡片已發送")
           print(f"候選驗證成功：資料日{asof}，做多{len(longs)}檔、做空{len(report.get('stocks', []))}檔；1分K")
           PY
           fi
@@ -88,4 +92,5 @@ jobs:
           path: state/*.json
           if-no-files-found: ignore
           retention-days: 14
+
 
