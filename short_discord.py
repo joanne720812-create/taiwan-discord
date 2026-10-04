@@ -1,5 +1,6 @@
 """台股壓力未突破候選＋Discord延遲行情提醒。"""
 import argparse
+import http.client
 import json
 import logging
 import math
@@ -89,6 +90,7 @@ def get_json(url):
 
         except (
             urllib.error.URLError,
+            http.client.IncompleteRead,
             ValueError,
             TimeoutError,
         ):
@@ -853,7 +855,7 @@ def long_candidates(asof):
     """沿用盤後做多TOP10排行，核對兩市場同一資料日。"""
     import stock_discord as ranking
     listed = ranking.listed_for_date(asof.isoformat())
-    otc = [item for row in ranking.get_json(ranking.TPEX)
+    otc = [item for row in get_json(ranking.TPEX)
            if (item := ranking.normalized(row, "上櫃")) and item["date"] == asof.isoformat()]
     current = [ranking.evaluate(item) for item in listed + otc
                if item["date"] == asof.isoformat() and re.fullmatch(r"[1-9]\d{3}", item["code"])]
@@ -1005,7 +1007,7 @@ def send_monitor_cards(stocks, asof):
     for direction in ("long", "short"):
         selected = [item for item in stocks if item["direction"] == direction]
         if selected:
-            send_embeds(f"🔎 {'做多' if direction == 'long' else '做空'}1分K監控名單｜資料日 {asof}",
+            send_embeds(f"🔎 {'做多' if direction == 'long' else '做空'}1分K候選名單｜資料日 {asof}",
                 [stock_card(item, f"#{rank}", f"前收 **{item['close']:.2f}**｜規則分數 {item['score']}\n"
                     "監控壓力／交界／支撐的上穿與下穿，及原有策略條件。", direction)
                  for rank, item in enumerate(selected, 1)])
@@ -1014,7 +1016,7 @@ def send_monitor_cards(stocks, asof):
 def test_cards():
     send_embeds("✅ 做多＋做空1分K卡片連線測試", [{
         "title": "卡片格式已啟用", "color": 0x5865F2,
-        "description": "平日台灣08:55起執行，09:00至13:30监控。每60秒檢查已收盤1分K。\n"
+        "description": "平日台灣08:55起執行，09:00至13:30監控。每60秒檢查已收盤1分K。\n"
             "上穿：紅色；下穿：綠色。每張股票卡片附壓力NH、交界CDP、支撐NL。\n"
             "行情可能延遲、排程可能晚啟動。以下是示範數值，未產生真實訊號。"}])
     stock = {"code": "示範", "name": "格式測試", **cdp_levels(110, 90, 100, "示範")}
