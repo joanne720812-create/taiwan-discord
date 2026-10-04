@@ -1047,8 +1047,9 @@ def send_crossing(stock, signal, demo=False):
                    + ("格式示範，未觸發真實收盤穿越。" if demo else
                       f"行情距今 {signal['age_minutes']:.1f} 分；僅確認收盤穿越價位，未確認回測、反轉或交易機會。"))
     send_embeds("🧪 收盤穿越卡片格式測試" if demo else "🔔 1分K收盤確認穿越",
-                [stock_card(stock, "示範收盤上穿" if demo and direction == "up" else
-                    "示範收盤下穿" if demo else "收盤確認上穿" if direction == "up" else "收盤確認下穿",
+                [stock_card(stock,
+                    ("🧪 示範｜" if demo else "") + ("🔴 收盤確認上穿" if direction == "up" else "🟢 收盤確認下穿")
+                    + signal["crossed"][0]["name"].split()[0] + f" {signal['crossed'][0]['level']:.2f}",
                     description, direction, extra=volume_fields(signal), demo=demo)])
 
 
@@ -1064,7 +1065,9 @@ def send_touch(stock, signal, demo=False):
                    + ("格式示範，不是真實觸價訊號。" if demo else
                       f"K棒起始距今 {signal['age_minutes']:.1f} 分；收到觸價資料即推播，不等收盤。"))
     send_embeds("🧪 到價卡片格式測試" if demo else "🔔 到價提醒｜不等1分K收盤",
-        [stock_card(stock, "示範到價" if demo else "🔴 到價提醒" if direction == "up" else "🟢 到價提醒",
+        [stock_card(stock,
+                    ("🧪 示範｜" if demo else "") + ("🔴 " if direction == "up" else "🟢 ")
+                    + "觸及" + signal["crossed"][0]["name"].split()[0] + f" {signal['crossed'][0]['level']:.2f}",
                     description, direction, volume_fields(signal), demo=demo)])
 
 
@@ -1353,5 +1356,6 @@ if __name__ == "__main__":
             "未輸出敏感錯誤內容。"
         )
         raise SystemExit(1)
+
 
 
