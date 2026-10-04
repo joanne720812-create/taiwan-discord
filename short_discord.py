@@ -1039,16 +1039,16 @@ def send_embeds(title, embeds):
 
 def send_crossing(stock, signal, demo=False):
     direction = signal["crossed"][0]["direction"]
-    lines = [f"**{'🔴 ⬆ 向上穿越' if item['direction'] == 'up' else '🟢 ⬇ 向下穿越'}｜{item['name']} {item['level']:.2f}**"
+    lines = [f"**{'🔴 ⬆ 收盤確認上穿' if item['direction'] == 'up' else '🟢 ⬇ 收盤確認下穿'}｜{item['name']} {item['level']:.2f}**"
              for item in signal["crossed"]]
     end = datetime.fromisoformat(signal["bar_at"]) + timedelta(minutes=1)
     description = (f"前根收盤 {signal['previous']:.2f} → 本根收盤 **{signal['price']:.2f}**\n"
                    + "\n".join(lines) + f"\n1分K收盤：{end:%Y-%m-%d %H:%M}\n"
-                   + ("格式示範，未觸發真實穿越。" if demo else
-                      f"行情距今 {signal['age_minutes']:.1f} 分；價位穿越提醒。"))
-    send_embeds("🧪 1分K卡片格式測試" if demo else "🔔 1分K價位穿越",
-                [stock_card(stock, "示範上穿" if demo and direction == "up" else
-                    "示範下穿" if demo else "上穿提醒" if direction == "up" else "下穿提醒",
+                   + ("格式示範，未觸發真實收盤穿越。" if demo else
+                      f"行情距今 {signal['age_minutes']:.1f} 分；僅確認收盤穿越價位，未確認回測、反轉或交易機會。"))
+    send_embeds("🧪 收盤穿越卡片格式測試" if demo else "🔔 1分K收盤確認穿越",
+                [stock_card(stock, "示範收盤上穿" if demo and direction == "up" else
+                    "示範收盤下穿" if demo else "收盤確認上穿" if direction == "up" else "收盤確認下穿",
                     description, direction, extra=volume_fields(signal), demo=demo)])
 
 
@@ -1099,7 +1099,7 @@ def test_cards():
     send_embeds("✅ 做多＋做空1分K卡片連線測試", [{
         "title": "卡片格式已啟用", "color": 0x5865F2,
         "description": "平日台灣08:55起執行，09:00至13:30監控。每60秒檢查1分K，含尚未收盤K。\n"
-            "到價即提醒，不等待收盤穿越。由下接近亮紅色、由上接近亮綠色，觸價文字加粗。附壓力NH、交界CDP、支撐NL、本根1分K量、前20根均量與放量倍數。\n"
+            "到價即提醒，不等待收盤；另發1分K收盤確認上穿／下穿卡片。由下接近亮紅色、由上接近亮綠色，觸價文字加粗。附壓力NH、交界CDP、支撐NL、本根1分K量、前20根均量與放量倍數。\n"
             "行情可能延遲、排程可能晚啟動。以下是示範數值，未產生真實訊號。"}])
     stock = {"code": "示範", "name": "格式測試", **cdp_levels(110, 90, 100, "示範")}
     for previous, price in ((99, 101), (101, 99)):
@@ -1108,6 +1108,7 @@ def test_cards():
                   "volume_base_shares": 200000, "volume_ratio_1m": 2.5, "volume_base_count": 20, "crossed": [{"name": "交界 CDP", "level": 100,
                        "direction": "up" if price > previous else "down"}]}
         send_touch(stock, {**signal, "low": 99, "high": 101, "bar_complete": False}, demo=True)
+        send_crossing(stock, {**signal, "bar_complete": True}, demo=True)
 
 
 def monitor(once=False):
@@ -1178,7 +1179,7 @@ def monitor(once=False):
         f"🔎 做多＋做空1分K監控啟動｜{current:%Y-%m-%d %H:%M}\n"
         f"候選資料日：{asof}\n"
         f"{names}\n"
-        "每60秒檢查1分鐘K（含未收盤），觸及價位就提醒；行情可能延遲。\n"
+        "每60秒檢查1分鐘K（含未收盤），觸及價位就提醒，另發1分K收盤確認穿越；行情可能延遲。\n"
         "訊號是條件提醒，不是立即下單指令。"
     )
 
@@ -1221,6 +1222,16 @@ def monitor(once=False):
                                 individual = {**crossing, "crossed": [item]}
                                 send_touch(stock, individual)
                                 crossings[cross_key] = individual
+                                save("crossings.json", crossings)
+
+                    confirmed = crossing_signal(df, stock, current)
+                    if confirmed:
+                        for item in confirmed["crossed"]:
+                            confirm_key = f"{current.date()}:confirmed:{stock['ticker']}:{confirmed['bar_at']}:{item['name']}:{item['level']:.8f}:{item['direction']}"
+                            if confirm_key not in crossings:
+                                individual = {**confirmed, "crossed": [item], "bar_complete": True}
+                                send_crossing(stock, individual)
+                                crossings[confirm_key] = individual
                                 save("crossings.json", crossings)
 
                     signal = (long_signal if stock["direction"] == "long" else short_signal)(df, stock, current)
