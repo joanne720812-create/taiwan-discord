@@ -13,6 +13,21 @@ STATE_FILE = "rising5.json"
 EVENT_FILE = "rising5_events.json"
 
 
+def cdp_levels(high, low, close, source_date):
+    if not all(math.isfinite(v) and v > 0 for v in (high, low, close)) or not low <= close <= high:
+        raise ValueError("前一交易日高低收不完整，不能計算撐壓")
+    pivot = (high + low + 2 * close) / 4
+    return dict(resistance=2 * pivot - low, pivot=pivot,
+                support=2 * pivot - high, levels_date=source_date)
+
+
+def level_text(stock):
+    if not all(k in stock for k in ("resistance", "pivot", "support", "levels_date")):
+        return "撐壓待重新選股更新"
+    return (f'壓力(NH){stock["resistance"]:.2f}｜交界(CDP){stock["pivot"]:.2f}｜'
+            f'支撐(NL){stock["support"]:.2f}（基準{stock["levels_date"]}）')
+
+
 def rsi(series, length=14):
     # Wilder RMA seeded with the first length price changes.
     changes = series.astype(float).diff().dropna()
@@ -81,7 +96,12 @@ def scan(latest=False, notify=True):
         if not all(math.isfinite(v) and v > 0 for v in (ma, prev_ma, avg_vol)):
             failures += 1
             continue
-        item = dict(stock, ma60=ma, prior_ma60=prev_ma, daily_rsi=daily_rsi, daily_relvol=rel)
+        try:
+            levels = cdp_levels(float(df.High.iloc[-1]), float(df.Low.iloc[-1]), close, asof.isoformat())
+        except ValueError:
+            failures += 1
+            continue
+        item = dict(stock, ma60=ma, prior_ma60=prev_ma, daily_rsi=daily_rsi, daily_relvol=rel, **levels)
         pool.append(item)
         if ma < close <= ma * 1.1 and rel >= 1.5 and 50 <= daily_rsi < 70:
             candidates.append(item)
@@ -93,7 +113,7 @@ def scan(latest=False, notify=True):
                   top10=candidates[:10], total=len(universe), failures=failures)
     base.save(STATE_FILE, report)
     if notify:
-        rows = [f'{i}. {s["code"]} {s["name"]}｜收盤{s["official_close"]:g}｜量比{s["daily_relvol"]:.2f}｜日RSI{s["daily_rsi"]:.1f}' for i, s in enumerate(report["top10"], 1)]
+        rows = [f'{i}. {s["code"]} {s["name"]}｜收盤{s["official_close"]:g}｜量比{s["daily_relvol"]:.2f}｜日RSI{s["daily_rsi"]:.1f}\n{level_text(s)}' for i, s in enumerate(report["top10"], 1)]
         base.send_discord("📋 起漲候選自動更新｜資料日 " + asof.isoformat() + "\n" +
                           ("\n".join(rows) if rows else "目前沒有同時符合日線預選條件的股票，不硬湊10檔。") +
                           f"\n上市＋上櫃，前日量≥2000張、金額≥1億元、股價≥10元；監控{len(pool)}檔有效行情。\n" +
@@ -150,7 +170,7 @@ def sweep(report, events):
     # Deliver every new match in groups of ten; never drop matches due to rank.
     for start in range(0, len(found), 10):
         group = found[start:start + 10]
-        rows = [f'{s["code"]} {s["name"]}｜{datetime.fromisoformat(s["bar_end"]).strftime("%H:%M")}收盤{s["close"]:g}｜季線{s["ma60"]:.2f}｜量比{s["volume_ratio"]:.2f}｜RSI{s["rsi5"]:.1f}' for _, s in group]
+        rows = [f'{s["code"]} {s["name"]}｜{datetime.fromisoformat(s["bar_end"]).strftime("%H:%M")}收盤{s["close"]:g}｜季線{s["ma60"]:.2f}｜量比{s["volume_ratio"]:.2f}｜RSI{s["rsi5"]:.1f}\n{level_text(s)}' for _, s in group]
         base.send_discord("🔔 新起漲條件符合｜5分K收盤確認\n" + "\n".join(rows) +
                           "\n新突破前一交易日60日季線＋前20根5分K均量1.5倍＋RSI14<70。\n雲端自動換股監控；可能延遲，不是下單指令。")
         for key, s in group:
@@ -161,7 +181,7 @@ def sweep(report, events):
     codes = [s["ticker"] for s in top]
     if codes != events.get("top_codes", []) and top:
         base.send_discord("📌 今日5分K符合訊號名單更新｜最多10檔\n" + "\n".join(
-            f'{i}. {s["code"]} {s["name"]}｜訊號收盤{s["close"]:g}｜量比{s["volume_ratio"]:.2f}' for i, s in enumerate(top, 1)) +
+            f'{i}. {s["code"]} {s["name"]}｜訊號收盤{s["close"]:g}｜量比{s["volume_ratio"]:.2f}\n{level_text(s)}' for i, s in enumerate(top, 1)) +
             "\n這是今日曾符合的訊號排行，不表示此刻仍符合；TradingView固定名單不會同步換股。")
         events["top_codes"] = codes
         base.save(EVENT_FILE, events)
