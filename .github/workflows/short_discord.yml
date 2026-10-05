@@ -1,4 +1,4 @@
-name: 台股做多做空1分K盤中推播
+name: 台股做多做空5分K盤中推播
 
 on:
   workflow_dispatch:
@@ -76,7 +76,7 @@ jobs:
           stocks = bot.attach_levels(stocks, asof)
           bot.send_monitor_cards(stocks, asof)
           print(f"CDP基準核對成功：{len(stocks)}檔，卡片已發送")
-          print(f"候選驗證成功：資料日{asof}，做多{len(longs)}檔、做空{len(report.get('stocks', []))}檔；1分K")
+          print(f"候選驗證成功：資料日{asof}，做多{len(longs)}檔、做空{len(report.get('stocks', []))}檔；5分K")
           PY
           fi
           if [ "$MODE" = "scan" ] && [ -n "$SCAN_DATE" ]; then
@@ -92,5 +92,3 @@ jobs:
           path: state/*.json
           if-no-files-found: ignore
           retention-days: 14
-
-
