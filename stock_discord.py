@@ -146,6 +146,10 @@ def message(stocks, date):
     embeds = []
     for rank, s in enumerate(stocks, 1):
         cl, hi, lo = s['close'], s['high'], s['low']
+        if not all(math.isfinite(v) and v > 0 for v in (cl, hi, lo)) or not lo <= cl <= hi:
+            raise ValueError(f'{s["code"]} CDP基準資料不完整')
+        pivot = (hi + lo + 2 * cl) / 4
+        resistance, support = 2 * pivot - lo, 2 * pivot - hi
         # 參考區間來自當日 K 棒，隔日會變動；不是委託價格或獲利承諾。
         entry_lo = max(s['open'], lo)
         entry_hi = cl
@@ -161,9 +165,14 @@ def message(stocks, date):
                             f'**② 盤中劇本**：先觀察前 5 分鐘是否守住開盤價。\n'
                             f'**③ 第一個動作**：等待前 5 分鐘結束，再評估。\n\n'
                             f'**隔日觀察區**：{fmt(entry_lo)}～{fmt(entry_hi)}（前日開盤至收盤）\n'
-                            f'**參考防守**：前日低點 {fmt(lo)}　**參考壓力**：前日高點 {fmt(hi)}\n'
+                            f'**參考防守**：前日低點 {fmt(lo)}　**前日高點**： {fmt(hi)}\n'
                             f'開高但量價未同步時不追價；跌破防守價應重新評估。'),
-            'footer': {'text': f'資料日 {date}｜盤後資料；價位僅為前日 K 棒參考，非即時訊號或投資建議'}
+            'fields': [
+                {'name': '壓力 NH', 'value': f'**{resistance:.2f}**', 'inline': True},
+                {'name': '交界 CDP', 'value': f'**{pivot:.2f}**', 'inline': True},
+                {'name': '支撐 NL', 'value': f'**{support:.2f}**', 'inline': True},
+            ],
+            'footer': {'text': f'CDP基準 {date}｜盤後資料；隔日觀察價位，非即時訊號或投資建議'}
         })
     names = '\n'.join(f"{rank}. {s['code']} {s['name']}｜收盤 {fmt(s['close'])}" for rank, s in enumerate(stocks, 1))
     return {'content': f'🔴 **做多觀察前{len(stocks)}檔｜盤後資料日 {date}**\n' + names + '\n上市＋上櫃｜單日5條件評分；這是下一交易日觀察名單，進場需等待5分K條件成立。',
@@ -178,6 +187,9 @@ def send(webhook, payload):
         accepted = json.load(resp)
     if len(accepted.get('embeds', [])) != len(payload.get('embeds', [])):
         raise RuntimeError('Discord名單卡片數量未確認')
+    if any([f.get('name') for f in e.get('fields', [])] != ['壓力 NH', '交界 CDP', '支撐 NL'] for e in accepted.get('embeds', [])):
+        raise RuntimeError('Discord三項CDP價位欄位未確認')
+    print('Discord已確認：每檔均顯示壓力 NH、交界 CDP、支撐 NL')
     print(f"Discord已確認收到：{len(accepted.get('embeds', []))}張做多名單卡片＋文字總表")
 
 
