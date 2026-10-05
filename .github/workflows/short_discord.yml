@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: test連線測試／scan盤後選股／monitor盤中監控
+        description: test名單驗證／scan盤後選股／monitor盤中監控／connection頻道連線
         type: choice
         default: test
-        options: [test, scan, monitor]
+        options: [test, scan, monitor, connection]
       scan_date:
         description: 資料日期 YYYY-MM-DD；留空使用台灣今天
         type: string
@@ -70,6 +70,20 @@ jobs:
               exit 1
             fi
             export DISCORD_WEBHOOK_URL="$INTRADAY_WEBHOOK_URL"
+          fi
+          if [ "$MODE" = "connection" ]; then
+            python - <<'PY'
+          import json, os, urllib.request
+          payload = {"content": "✅ 盤中5分K頻道連線測試成功\n明日起，做多／做空觸價、收盤穿越與起漲5分K通知會送到此頻道。盤後名單保留在一般頻道。行情可能延遲，非下單指令。", "allowed_mentions": {"parse": []}}
+          url = os.environ["DISCORD_WEBHOOK_URL"] + "?wait=true"
+          req = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(), headers={"Content-Type": "application/json", "User-Agent": "TaiwanStockDiscord/1.0"}, method="POST")
+          with urllib.request.urlopen(req, timeout=30) as response:
+              accepted = json.load(response)
+          if accepted.get("channel_id") != "1556619339573231726":
+              raise RuntimeError("Unexpected destination channel")
+          print("Discord confirmed test message in intraday 5m channel")
+          PY
+            exit 0
           fi
           if [ "$MODE" = "test" ]; then
             python - <<'PY'
