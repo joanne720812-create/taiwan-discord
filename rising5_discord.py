@@ -29,8 +29,8 @@ def cdp_levels(high, low, close, source_date):
 def level_text(stock):
     if not all(k in stock for k in ("resistance", "pivot", "support", "levels_date")):
         return "撐壓待重新選股更新"
-    return (f'壓力(NH){stock["resistance"]:.2f}｜交界(CDP){stock["pivot"]:.2f}｜'
-            f'支撐(NL){stock["support"]:.2f}（基準{stock["levels_date"]}）')
+    return (f'🔴 壓力(NH){stock["resistance"]:.2f}｜🟡 交界(CDP){stock["pivot"]:.2f}｜'
+            f'🟢 支撐(NL){stock["support"]:.2f}（基準{stock["levels_date"]}）')
 
 
 def card_payload(title, stocks, kind, note=""):
@@ -46,7 +46,7 @@ def card_payload(title, stocks, kind, note=""):
             description = (f'**5分K訊號收盤 {stock["close"]:g}**｜{bar.strftime("%m/%d %H:%M")}\n'
                            f'季線 {stock["ma60"]:.2f}｜量比 {stock["volume_ratio"]:.2f} 倍｜RSI {stock["rsi5"]:.1f}')
         fields = [dict(name=label, value=f'**{stock[key]:.2f}**', inline=True)
-                  for label, key in [("壓力 NH", "resistance"), ("交界 CDP", "pivot"), ("支撐 NL", "support")]]
+                  for label, key in [("🔴 壓力 NH", "resistance"), ("🟡 交界 CDP", "pivot"), ("🟢 支撐 NL", "support")]]
         embeds.append(dict(title=f'#{rank}｜{stock["code"]} {stock["name"]}',
                            color=0xE74C3C, description=description, fields=fields,
                            footer=dict(text=f'撐壓基準 {stock["levels_date"]}｜CDP計算參考，非下單指令')))
