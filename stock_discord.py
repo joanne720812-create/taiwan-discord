@@ -158,19 +158,20 @@ def message(stocks, date):
         conditions = '、'.join(label for label, ok in s['checks'] if ok)
         embeds.append({
             'title': f'#{rank}｜{s["code"]} {s["name"]}｜{s["market"]}｜{s["score"]} 分',
-            'color': 0xFA476B if s['score'] >= 80 else 0x7289DA,
+            'color': 0xFF253A,
             'description': (f'**收盤 {fmt(cl)}　漲跌 {s["pct"]:+.2f}%　成交 {s["lots"]:,.0f} 張**\n'
                             f'強勢條件 {s["passed"]}/5：{conditions}\n\n'
-                            f'**① 開盤觀察**：留意是否跳空過大，不以盤後資料預判開盤。\n'
-                            f'**② 盤中劇本**：先觀察前 5 分鐘是否守住開盤價。\n'
-                            f'**③ 第一個動作**：等待前 5 分鐘結束，再評估。\n\n'
-                            f'**隔日觀察區**：{fmt(entry_lo)}～{fmt(entry_hi)}（前日開盤至收盤）\n'
-                            f'**參考防守**：前日低點 {fmt(lo)}　**前日高點**： {fmt(hi)}\n'
-                            f'開高但量價未同步時不追價；跌破防守價應重新評估。'),
+                            f'**① 盤前準備**：核對公告、當沖資格與即時報價；先寫下最大可承受損失。\n'
+                            f'**② 09:00～09:15**：第一波先觀察；站上交界 {pivot:.2f} 才偏多，跌回交界先等。\n'
+                            f'**③ 突破劇本**：完成5分K突破開盤首根高點，同時在VWAP與前收上方且放量，再核對盤中訊號。\n'
+                            f'**④ 回測劇本**：回測交界 {pivot:.2f} 後收回上方才列入觀察；只有觸價不算進場成立。\n'
+                            f'**⑤ 壓力觀察**：接近 {resistance:.2f} 卻未突破，評估減碼；放量站上後觀察能否守穩。\n'
+                            f'**⑥ 失效／不追**：跌破支撐 {support:.2f} 或前低 {lo:.2f}，重新評估；大幅跳空或漲停附近不追價。\n'
+                            f'前日高點 {hi:.2f}｜開盤觀察區 {fmt(entry_lo)}～{fmt(entry_hi)}；以上為條件式劇本，非委託價格。'),
             'fields': [
-                {'name': '壓力 NH', 'value': f'**{resistance:.2f}**', 'inline': True},
-                {'name': '交界 CDP', 'value': f'**{pivot:.2f}**', 'inline': True},
-                {'name': '支撐 NL', 'value': f'**{support:.2f}**', 'inline': True},
+                {'name': '🔴 壓力 NH', 'value': f'**{resistance:.2f}**', 'inline': True},
+                {'name': '🟡 交界 CDP', 'value': f'**{pivot:.2f}**', 'inline': True},
+                {'name': '🟢 支撐 NL', 'value': f'**{support:.2f}**', 'inline': True},
             ],
             'footer': {'text': f'CDP基準 {date}｜盤後資料；隔日觀察價位，非即時訊號或投資建議'}
         })
@@ -187,9 +188,9 @@ def send(webhook, payload):
         accepted = json.load(resp)
     if len(accepted.get('embeds', [])) != len(payload.get('embeds', [])):
         raise RuntimeError('Discord名單卡片數量未確認')
-    if any([f.get('name') for f in e.get('fields', [])] != ['壓力 NH', '交界 CDP', '支撐 NL'] for e in accepted.get('embeds', [])):
+    if any([f.get('name') for f in e.get('fields', [])] != ['🔴 壓力 NH', '🟡 交界 CDP', '🟢 支撐 NL'] for e in accepted.get('embeds', [])):
         raise RuntimeError('Discord三項CDP價位欄位未確認')
-    print('Discord已確認：每檔均顯示壓力 NH、交界 CDP、支撐 NL')
+    print('Discord已確認：每檔均顯示🔴 壓力 NH、🟡 交界 CDP、🟢 支撐 NL')
     print(f"Discord已確認收到：{len(accepted.get('embeds', []))}張做多名單卡片＋文字總表")
 
 
