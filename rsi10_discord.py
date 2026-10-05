@@ -217,6 +217,7 @@ def observe(report, events, dry_run=False):
                  f"送出時間：{sent_time:%H:%M:%S}｜行情距今{lag:.1f}分鐘\n"
                  f"5分RSI{hit['rsi5']:.1f}｜量比{hit['volume_ratio']:.2f}倍\n"
                  f"日RSI{stock['daily_rsi']:.1f}｜基準{report['asof']}\n"
+                 f"支撐{stock['support']:.2f}｜壓力{stock['resistance']:.2f}｜交界{stock['pivot']:.2f}\n"
                  "這是開盤15分鐘強勢條件觀察，可能延遲；不是即時成交價或買進指令。", dry_run)
             if not dry_run:
                 events["sent"].append(key)
