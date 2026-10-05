@@ -1091,6 +1091,16 @@ def send_strategy(stock, signal, current, notification_number):
 def send_monitor_cards(stocks, asof):
     for direction in ("long", "short"):
         selected = [item for item in stocks if item["direction"] == direction]
+        label = '做多' if direction == 'long' else '做空'
+        lines = [f"{'🔴' if direction == 'long' else '🟢'} {label}5分K監控名單｜{len(selected)}檔｜資料日 {asof}"]
+        for rank, item in enumerate(selected, 1):
+            lines.append(f"{rank}. {item['code']} {item['name']}｜前收 {item['close']:.2f}\n"
+                         f"壓力 {item['cdp_resistance']:.2f}｜交界 {item['pivot']:.2f}｜支撐 {item['support']:.2f}")
+        if not selected:
+            lines.append('目前沒有符合條件的候選股票。')
+        lines.append('本表是實際監控候選，尚未代表進場條件成立。')
+        send_discord('\n'.join(lines))
+        LOG.info('%s監控文字名單已發送：%s檔；資料日%s', label, len(selected), asof)
         if selected:
             send_embeds(f"🔎 {'做多' if direction == 'long' else '做空'}5分K候選名單｜資料日 {asof}",
                 [stock_card(item, f"#{rank}", f"前收 **{item['close']:.2f}**｜規則分數 {item['score']}\n"
@@ -1162,6 +1172,7 @@ def monitor(once=False):
     stocks = [{**item, "direction": "short"} for item in shortlist["stocks"]]
     stocks += long_candidates(asof)
     stocks = attach_levels(stocks, asof)
+    save("monitor_candidates_5m.json", {"asof": str(asof), "monitor_date": str(current.date()), "stocks": stocks})
     events = load("events_5m.json", {})
 
     earliest = (
