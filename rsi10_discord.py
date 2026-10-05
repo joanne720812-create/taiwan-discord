@@ -147,7 +147,7 @@ def scan(latest=False, dry_run=False, notify=True, slot="daily"):
     base.save(REPORT, report)
     if notify:
         events = base.load(EVENTS, {})
-        key = f"{current.date()}:{slot}:{asof}"
+        key = f"{current.date()}:{slot}:{asof}:cards-v1"
         if dry_run or events.get("last_list") != key:
             message = daily_payload(report, slot)
             send(message, dry_run)
