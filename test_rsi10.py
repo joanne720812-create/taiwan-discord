@@ -72,6 +72,31 @@ class RsiObservationTests(unittest.TestCase):
         self.assertEqual(source.call_args_list[-1].args,("TW",today))
 
 
+    def test_full_session_includes_afternoon_with_dynamic_levels(self):
+        frame=self.frame()
+        frame.index=frame.index[:-4].append(pd.date_range("2026-10-05 13:15",periods=4,freq="5min",tz=bot.base.TZ))
+        with patch.object(bot,"rsi",self.fixed_rsi):
+            hits=bot.morning_signals(frame,{},self.now(13,40),full_session=True)
+        self.assertEqual(len(hits),3)
+        self.assertEqual(datetime.fromisoformat(hits[-1]["bar_end"]).time().minute,30)
+        self.assertEqual(hits[-1]["intraday_levels"]["pivot"],100)
+        self.assertEqual(hits[-1]["intraday_levels"]["resistance"],101)
+        self.assertEqual(hits[-1]["intraday_levels"]["support"],99)
+
+    def test_continuing_strength_sends_each_bar_once(self):
+        stock=dict(ticker="TEST.TW",code="1234",name="測試",support=90,resistance=110,pivot=100)
+        report=dict(stocks=[stock],asof="2026-10-02")
+        events={}
+        with patch.object(bot,"batches",side_effect=lambda *args:[(stock,self.frame())]), patch.object(bot,"rsi",self.fixed_rsi), patch.object(bot.base,"save"), patch.object(bot,"send") as sent:
+            with patch.object(bot.base,"now_tw",return_value=self.now(9,5)):
+                bot.observe(report,events)
+                bot.observe(report,events)
+            with patch.object(bot.base,"now_tw",return_value=self.now(9,10)):
+                bot.observe(report,events)
+            self.assertEqual(sent.call_count,2)
+            self.assertIn("5分K壓力101.00｜交界100.00｜支撐99.00",sent.call_args.args[0])
+
+
     def test_future_history_is_not_accepted_as_baseline(self):
         idx=pd.date_range("2026-08-27",periods=40,freq="D")
         frame=pd.DataFrame({"Close":100.},index=idx)

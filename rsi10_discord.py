@@ -1,4 +1,4 @@
-"""Daily RSI shortlist and first-three-completed-5m-bar observation; no orders."""
+"""Daily RSI shortlist and full-session completed-5m-bar observation; no orders."""
 import argparse
 import json
 import logging
@@ -167,11 +167,11 @@ def daily_payload(report, slot):
     if not report["stocks"]:
         lines.append("本次沒有符合股票，不湊滿10檔。")
     lines.append(f"上市＋上櫃流動性初篩{report['total']}檔；歷史資料可用率{report['coverage']:.0%}。近40根日K還原比例變動者暫排除。")
-    lines.append("9:00～9:15僅觀察；5分RSI≥60且量比≥1.5倍才提醒。量比相對前20根完成K棒，包含前日。行情與排程可能延遲，非買進指令、不保證漲停。")
+    lines.append("監看9:00～13:30完成5分K；RSI≥60且量比≥1.5倍每根都提醒，附5分K壓力／交界／支撐。量比相對前20根完成K棒，包含前日。行情與排程可能延遲，非買進指令、不保證漲停。")
     return "\n\n".join(lines)
 
 
-def morning_signals(frame, stock, current):
+def morning_signals(frame, stock, current, full_session=False):
     if frame.empty:
         return []
     df = frame.copy()
@@ -185,7 +185,7 @@ def morning_signals(frame, stock, current):
     for idx in df.index:
         start = idx.to_pydatetime()
         end = start + timedelta(minutes=5)
-        if start.date() != current.date() or start.time() not in {clock(9), clock(9,5), clock(9,10)}:
+        if start.date() != current.date() or (not clock(9) <= start.time() < clock(13,30) if full_session else start.time() not in {clock(9), clock(9,5), clock(9,10)}):
             continue
         dr, vr = float(strength.loc[idx]), float(volume_ratio.loc[idx])
         if not math.isfinite(dr) or not math.isfinite(vr):
@@ -194,31 +194,41 @@ def morning_signals(frame, stock, current):
         if not 0 <= lag <= MAX_AGE_MINUTES:
             continue
         status = "重點觀察" if dr >= 60 and vr >= 1.5 else "暫時排除" if dr < 50 else "等待量價轉強"
-        found.append(dict(stock, rsi5=dr, volume_ratio=vr, close=float(df.loc[idx, "Close"]),
+        levels = cdp_levels(float(df.loc[idx, "High"]), float(df.loc[idx, "Low"]), float(df.loc[idx, "Close"]), end.isoformat())
+        found.append(dict(stock, intraday_levels=levels, rsi5=dr, volume_ratio=vr, close=float(df.loc[idx, "Close"]),
                           bar_end=end.isoformat(), lag_minutes=lag, status=status))
     return found
 
 
 def observe(report, events, dry_run=False):
     for stock, frame in batches(report["stocks"], "5m", "5d"):
-        hits = morning_signals(frame, stock, base.now_tw())
+        hits = morning_signals(frame, stock, base.now_tw(), full_session=True)
+        if not hits:
+            continue
+        ticker = stock["ticker"]
+        # Process newly available completed bars once, within the freshness limit.
         for hit in hits:
+            previous = events.setdefault("observed", {}).get(ticker)
+            if previous and previous["bar_end"] >= hit["bar_end"]:
+                continue
+            events["observed"][ticker] = hit
             end = datetime.fromisoformat(hit["bar_end"])
-            events.setdefault("observed", {})[stock["ticker"]] = hit
-            key = f"{base.now_tw().date()}:{stock['ticker']}"
+            key = f"{ticker}:{hit['bar_end']}"
             if hit["status"] != "重點觀察" or key in events.setdefault("sent", []):
                 continue
             sent_time = base.now_tw()
             lag = (sent_time-end).total_seconds()/60
-            if lag > MAX_AGE_MINUTES:
+            if not 0 <= lag <= MAX_AGE_MINUTES:
                 continue
-            send(f"🔴 **RSI強勢觀察｜{stock['code']} {stock['name']}**\n"
+            levels = hit["intraday_levels"]
+            send(f"🔴 **RSI盤中5分K強勢｜{stock['code']} {stock['name']}**\n"
                  f"K棒收盤：{end:%Y-%m-%d %H:%M}｜訊號收盤價{hit['close']:g}\n"
                  f"送出時間：{sent_time:%H:%M:%S}｜行情距今{lag:.1f}分鐘\n"
                  f"5分RSI{hit['rsi5']:.1f}｜量比{hit['volume_ratio']:.2f}倍\n"
-                 f"日RSI{stock['daily_rsi']:.1f}｜基準{report['asof']}\n"
-                 f"支撐{stock['support']:.2f}｜壓力{stock['resistance']:.2f}｜交界{stock['pivot']:.2f}\n"
-                 "這是開盤15分鐘強勢條件觀察，可能延遲；不是即時成交價或買進指令。", dry_run)
+                 f"**5分K壓力{levels['resistance']:.2f}｜交界{levels['pivot']:.2f}｜支撐{levels['support']:.2f}**\n"
+                 f"上述價位由這根完成K棒的高、低、收盤計算CDP，供下一根觀察。\n"
+                 f"日線壓力{stock['resistance']:.2f}｜交界{stock['pivot']:.2f}｜支撐{stock['support']:.2f}\n"
+                 "條件：RSI≥60且量比≥1.5倍；每根符合條件的完成K棒均推播，持續強勢也通知，同根K棒不重複。行情可能延遲，非買進指令。", dry_run)
             if not dry_run:
                 events["sent"].append(key)
                 base.save(EVENTS, events)
@@ -229,24 +239,24 @@ def monitor():
     current = base.now_tw()
     if current.weekday() >= 5:
         return
-    if current.time() >= clock(9, 45):
-        send("⚠️ RSI開盤監控排程啟動過晚，已超過9:45；今天不補發過期強勢訊號。")
+    if current.time() >= clock(13, 55):
+        send("⚠️ RSI盤中監控排程啟動過晚，已超過13:55；今天不補發過期強勢訊號。")
         return
     report = scan(latest=True, slot="morning")
     events = base.load(EVENTS, {})
     day = current.date().isoformat()
     if events.get("date") != day:
         events = dict(date=day, last_list=events.get("last_list"), sent=[], observed={})
-    while base.now_tw().time() < clock(9,45):
+    while base.now_tw().time() < clock(13,55):
         if base.now_tw().time() >= clock(9,5):
             observe(report, events)
         time.sleep(60)
     if not events.get("summary"):
         observed = events.get("observed", {})
-        lines = [f"📌 RSI開盤觀察結束｜{day}", f"候選{len(report['stocks'])}檔｜收到有效開盤K棒{len(observed)}檔｜強勢已提醒{len(events.get('sent', []))}檔"]
+        lines = [f"📌 RSI全日盤中觀察結束｜{day}", f"候選{len(report['stocks'])}檔｜收到有效盤中K棒{len(observed)}檔｜強勢提醒共{len(events.get('sent', []))}次"]
         for stock in report["stocks"]:
             hit = observed.get(stock["ticker"])
-            lines.append(f"{stock['code']} {stock['name']}｜" + (hit["status"] if hit else "無可用開盤K棒，無法判定"))
+            lines.append(f"{stock['code']} {stock['name']}｜" + (hit["status"] if hit else "無可用盤中K棒，無法判定"))
         lines.append("未收到K棒可能為休市、停牌、無成交或資料缺漏；不能視為沒有訊號。最新狀態不代表先前提醒仍成立。")
         send("\n".join(lines))
         events["summary"] = True
@@ -262,7 +272,7 @@ def main():
         if mode == "preview":
             scan(latest=True, dry_run=True, slot="preview")
         elif mode == "connection":
-            send("✅ RSI強勢觀察自動推播連線測試成功。\n排程：週一至週五8:25啟動盤前選股與開盤監控、17:15更新盤後候選。\n僅監看9:00～9:15完成5分K；行情和排程可能延遲，不保證每天有強勢訊號。")
+            send("✅ RSI強勢觀察自動推播連線測試成功。\n排程：週一至週五8:25啟動盤前選股與開盤監控、17:15更新盤後候選。\n已延伸監看9:00～13:30完成5分K；符合強勢才通知，附5分K與日線壓力／交界／支撐。行情和排程可能延遲，不保證每天有強勢訊號。")
         elif mode == "latest":
             scan(latest=True)
         elif mode == "scan":
