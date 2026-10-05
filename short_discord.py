@@ -651,8 +651,8 @@ def scan(asof):
     if top:
         send_embeds(f"📉 下一交易日偏空候選｜資料日 {asof}",
             [stock_card(item, f"#{rank} 偏空候選", f"前收 **{item['close']:.2f}**｜規則分數 {item['score']}\n"
-                + "、".join(item['reasons'][:3]), "short",
-                [{"name": "策略壓力（前20交易日高點）", "value": f"{item['resistance']:.2f}", "inline": True}])
+                + "、".join(item['reasons'][:3]) + premarket_short(item), "short",
+                [{"name": "🔴 策略壓力（前20交易日高點）", "value": f"{item['resistance']:.2f}", "inline": True}])
              for rank, item in enumerate(top, 1)])
     else:
         send_discord("\n\n".join(lines))
@@ -969,7 +969,7 @@ def crossing_signal(frame, stock, current):
         return None
     previous, price = map(float, df.iloc[-2:]["Close"])
     crossed = []
-    for name, field in (("壓力 NH", "cdp_resistance"), ("交界 CDP", "pivot"), ("支撐 NL", "support")):
+    for name, field in (("🔴 壓力 NH", "cdp_resistance"), ("🟡 交界 CDP", "pivot"), ("🟢 支撐 NL", "support")):
         level = stock[field]
         if previous <= level < price:
             crossed.append({"name": name, "level": level, "direction": "up"})
@@ -1001,7 +1001,7 @@ def touch_signal(frame, stock, current):
         return None
     previous = float(df.iloc[-2]["Close"]) if len(df) >= 2 and (df.index[-1] - df.index[-2]).total_seconds() == 300 else opening
     touched = []
-    for name, field in (("壓力 NH", "cdp_resistance"), ("交界 CDP", "pivot"), ("支撐 NL", "support")):
+    for name, field in (("🔴 壓力 NH", "cdp_resistance"), ("🟡 交界 CDP", "pivot"), ("🟢 支撐 NL", "support")):
         level = stock[field]
         if low <= level <= high:
             direction = "up" if previous < level or (previous == level and price >= level) else "down"
@@ -1015,7 +1015,17 @@ def touch_signal(frame, stock, current):
 
 def level_fields(stock):
     return [{"name": name, "value": f"**{stock[field]:.2f}**", "inline": True}
-            for name, field in (("壓力 NH", "cdp_resistance"), ("交界 CDP", "pivot"), ("支撐 NL", "support"))]
+            for name, field in (("🔴 壓力 NH", "cdp_resistance"), ("🟡 交界 CDP", "pivot"), ("🟢 支撐 NL", "support"))]
+
+
+def premarket_short(stock):
+    return (f"\n\n**盤前做空觀察劇本**\n"
+        f"① 09:00～09:15先觀察；開盤≤前收×0.97（{stock['close']*.97:.2f}）不追空。\n"
+        f"② 測試20日策略壓力{stock['resistance']:.2f}失敗，再等2根量縮收跌；\n"
+        "跌破測壓K低點且在VWAP下，才核對原策略訊號（最早09:30）。\n"
+        f"③ CDP交界{stock['pivot']:.2f}與支撐{stock['support']:.2f}是回補觀察位，非保證到價。\n"
+        f"④ 完成5分K曾收≥{stock['resistance']*1.002:.2f}，原測壓做空劇本取消。\n"
+        "⑤ 先核對券商可空／當沖資格；回補前確認即時報價。")
 
 
 def stock_card(stock, title, description, direction, extra=None, demo=False):
@@ -1079,7 +1089,7 @@ def send_strategy(stock, signal, current, notification_number):
            "測壓失敗，後2根量縮收跌，下穿測壓K低點並位於VWAP下方。")
         + f"\n本日通知 {notification_number}/{MAX_SIGNALS_PER_DAY}｜規則分數 {stock['score']}"
         + f"\n行情距今 {signal['age_minutes']:.1f}分｜推播 {current:%H:%M:%S}")
-    extra = [{"name": "策略壓力（開盤5分鐘高點）" if long else "策略壓力（前20交易日高點）",
+    extra = [{"name": "🔴 策略壓力（開盤5分鐘高點）" if long else "🔴 策略壓力（前20交易日高點）",
               "value": f"{signal['resistance']:.2f}", "inline": True},
              {"name": "VWAP", "value": f"{signal['vwap']:.2f}", "inline": True},
              {"name": "型態失效參考", "value": f"{signal['stop']:.2f}", "inline": True}]
@@ -1095,7 +1105,7 @@ def send_monitor_cards(stocks, asof):
         lines = [f"{'🔴' if direction == 'long' else '🟢'} {label}5分K監控名單｜{len(selected)}檔｜資料日 {asof}"]
         for rank, item in enumerate(selected, 1):
             lines.append(f"{rank}. {item['code']} {item['name']}｜前收 {item['close']:.2f}\n"
-                         f"壓力 {item['cdp_resistance']:.2f}｜交界 {item['pivot']:.2f}｜支撐 {item['support']:.2f}")
+                         f"🔴 壓力 {item['cdp_resistance']:.2f}｜🟡 交界 {item['pivot']:.2f}｜🟢 支撐 {item['support']:.2f}")
         if not selected:
             lines.append('目前沒有符合條件的候選股票。')
         lines.append('本表是實際監控候選，尚未代表進場條件成立。')
@@ -1118,7 +1128,7 @@ def test_cards():
     for previous, price in ((99, 101), (101, 99)):
         signal = {"previous": previous, "price": price, "age_minutes": 0,
                   "bar_at": now_tw().isoformat(), "volume_shares": 500000,
-                  "volume_base_shares": 200000, "volume_ratio_5m": 2.5, "volume_base_count": 20, "crossed": [{"name": "交界 CDP", "level": 100,
+                  "volume_base_shares": 200000, "volume_ratio_5m": 2.5, "volume_base_count": 20, "crossed": [{"name": "🟡 交界 CDP", "level": 100,
                        "direction": "up" if price > previous else "down"}]}
         send_touch(stock, {**signal, "low": 99, "high": 101, "bar_complete": False}, demo=True)
         send_crossing(stock, {**signal, "bar_complete": True}, demo=True)
