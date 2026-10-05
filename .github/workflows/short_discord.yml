@@ -61,8 +61,16 @@ jobs:
         env:
           MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '55 0 * * 1-5' && 'monitor' || 'scan') }}
           SCAN_DATE: ${{ inputs.scan_date }}
+          INTRADAY_WEBHOOK_URL: ${{ secrets.DISCORD_INTRADAY_WEBHOOK_URL }}
         run: |
           python -m py_compile short_discord.py stock_discord.py
+          if [ "$MODE" != "scan" ]; then
+            if [ -z "$INTRADAY_WEBHOOK_URL" ]; then
+              echo "Missing intraday webhook; stopping to prevent sending to the wrong channel"
+              exit 1
+            fi
+            export DISCORD_WEBHOOK_URL="$INTRADAY_WEBHOOK_URL"
+          fi
           if [ "$MODE" = "test" ]; then
             python - <<'PY'
           import short_discord as bot
