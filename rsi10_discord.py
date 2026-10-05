@@ -98,9 +98,23 @@ def candidate(frame, stock, asof):
     return item, "qualified"
 
 
+def official_snapshots(today, latest):
+    snapshots = [base.official_snapshot(m, None if latest else today) for m in base.SOURCES]
+    dates = {d for d, _ in snapshots}
+    if latest and len(dates) > 1:
+        # Align lagging OpenAPI data to the newest confirmed official date.
+        # The shared TW adapter validates the dated TWSE closing-table fallback.
+        newest = max(dates)
+        if newest > today:
+            raise RuntimeError("Official data is future-dated")
+        snapshots = [base.official_snapshot(m, newest) if d < newest else (d, rows)
+                     for m, (d, rows) in zip(base.SOURCES, snapshots)]
+    return snapshots
+
+
 def scan(latest=False, dry_run=False, notify=True, slot="daily"):
     current = base.now_tw()
-    snapshots = [base.official_snapshot(m, None if latest else current.date()) for m in base.SOURCES]
+    snapshots = official_snapshots(current.date(), latest)
     dates = {d for d, _ in snapshots}
     if len(dates) != 1:
         raise RuntimeError("Official market dates differ; shortlist not refreshed")

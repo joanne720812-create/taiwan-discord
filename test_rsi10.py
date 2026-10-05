@@ -63,6 +63,15 @@ class RsiObservationTests(unittest.TestCase):
         _,reason=bot.candidate(frame,{"official_close":101.},idx[-1].date())
         self.assertEqual(reason,"close_mismatch")
 
+    def test_lagging_official_market_uses_dated_fallback(self):
+        today=date(2026,10,5)
+        old=date(2026,10,2)
+        with patch.object(bot.base,"official_snapshot",side_effect=[(old,[]),(today,[]),(today,[])]) as source:
+            snapshots=bot.official_snapshots(today,True)
+        self.assertEqual({d for d,_ in snapshots},{today})
+        self.assertEqual(source.call_args_list[-1].args,("TW",today))
+
+
     def test_future_history_is_not_accepted_as_baseline(self):
         idx=pd.date_range("2026-08-27",periods=40,freq="D")
         frame=pd.DataFrame({"Close":100.},index=idx)
