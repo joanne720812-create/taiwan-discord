@@ -682,7 +682,7 @@ def completed_bars(frame, current):
         and clock(9) <= timestamp.time() < clock(13, 30)
         and (
             timestamp.to_pydatetime()
-            + timedelta(minutes=1)
+            + timedelta(minutes=5)
             <= current
         )
         for timestamp in df.index
@@ -718,14 +718,14 @@ def short_signal(frame, stock, current):
     if any(
         (
             df.index[index] - df.index[index - 1]
-        ).total_seconds() != 60
+        ).total_seconds() != 300
         for index in range(1, len(df))
     ):
         return None
 
     bar_end = (
         df.index[-1].to_pydatetime()
-        + timedelta(minutes=1)
+        + timedelta(minutes=5)
     )
 
     age = (
@@ -789,7 +789,7 @@ def short_signal(frame, stock, current):
         and last["Close"] < first["Low"]
     )
 
-    # 使用1分K典型價格估算當日VWAP。
+    # 使用5分K典型價格估算當日VWAP。
     typical = (
         df["High"] + df["Low"] + df["Close"]
     ) / 3
@@ -868,18 +868,18 @@ def long_candidates(asof):
 
 
 def long_signal(frame, stock, current):
-    """完成前五根1分K後，放量突破開盤區間並站上VWAP。"""
+    """完成開盤首根5分K，且累積至少六根已收盤K後，放量突破開盤區間並站上VWAP。"""
     df = completed_bars(frame, current)
     if len(df) < 6 or df.index[0].time() != clock(9):
         return None
-    if any((df.index[i] - df.index[i-1]).total_seconds() != 60 for i in range(1, len(df))):
+    if any((df.index[i] - df.index[i-1]).total_seconds() != 300 for i in range(1, len(df))):
         return None
-    age = (current - (df.index[-1].to_pydatetime() + timedelta(minutes=1))).total_seconds() / 60
+    age = (current - (df.index[-1].to_pydatetime() + timedelta(minutes=5))).total_seconds() / 60
     if not 0 <= age <= MAX_BAR_AGE or (df["Volume"] <= 0).any():
         return None
     if df.iloc[0]["Open"] >= stock["close"] * 1.03:
         return None
-    opening_high = float(df.iloc[:5]["High"].max())
+    opening_high = float(df.iloc[:1]["High"].max())
     last, previous = df.iloc[-1], df.iloc[-2]
     vwap = float((((df["High"] + df["Low"] + df["Close"]) / 3) * df["Volume"]).sum() / df["Volume"].sum())
     volume_base = float(df.iloc[-6:-1]["Volume"].mean())
@@ -924,17 +924,17 @@ def attach_levels(stocks, asof):
 
 
 def volume_metrics(bars):
-    """本根已收盤1分K量；均量只取同日緊鄰前20根，不含本根。"""
+    """本根已收盤5分K量；均量只取同日緊鄰前20根，不含本根。"""
     if bars.empty:
         return {}
     current_volume = number(bars.iloc[-1]["Volume"])
     result = {"volume_shares": current_volume, "volume_base_shares": None,
-              "volume_ratio_1m": None, "volume_base_count": 0}
+              "volume_ratio_5m": None, "volume_base_count": 0}
     previous = bars.iloc[-21:-1]
     if len(previous) != 20:
         return result
     stamps = list(previous.index) + [bars.index[-1]]
-    if any((stamps[i] - stamps[i-1]).total_seconds() != 60 for i in range(1, len(stamps))):
+    if any((stamps[i] - stamps[i-1]).total_seconds() != 300 for i in range(1, len(stamps))):
         return result
     volumes = [number(value) for value in previous["Volume"]]
     if any(value is None or value < 0 for value in volumes):
@@ -942,17 +942,17 @@ def volume_metrics(bars):
     base = sum(volumes) / 20
     result.update(volume_base_shares=base, volume_base_count=20)
     if base > 0 and current_volume is not None and current_volume >= 0:
-        result["volume_ratio_1m"] = current_volume / base
+        result["volume_ratio_5m"] = current_volume / base
     return result
 
 
 def volume_fields(signal):
     volume = signal.get("volume_shares")
     base = signal.get("volume_base_shares")
-    ratio = signal.get("volume_ratio_1m")
+    ratio = signal.get("volume_ratio_5m")
     return [
-        {"name": "本根1分K成交量" + ("（未收盤）" if signal.get("bar_complete") is False else ""), "value": f"**{volume / 1000:,.2f} 張**" if volume is not None else "資料不足", "inline": True},
-        {"name": "前20根1分K均量", "value": f"**{base / 1000:,.2f} 張**" if base is not None else "同日連續K棒不足20根", "inline": True},
+        {"name": "本根5分K成交量" + ("（未收盤）" if signal.get("bar_complete") is False else ""), "value": f"**{volume / 1000:,.2f} 張**" if volume is not None else "資料不足", "inline": True},
+        {"name": "前20根5分K均量", "value": f"**{base / 1000:,.2f} 張**" if base is not None else "同日連續K棒不足20根", "inline": True},
         {"name": "放量倍數", "value": (f"**{ratio:.2f} 倍**" + (" 🟣 放量≥1.5倍" if ratio >= 1.5 else "")) if ratio is not None else "無法計算（資料不足或均量為0）", "inline": True},
     ]
 
@@ -961,9 +961,9 @@ def crossing_signal(frame, stock, current):
     df = completed_bars(frame, current)
     if len(df) < 2:
         return None
-    if (df.index[-1] - df.index[-2]).total_seconds() != 60:
+    if (df.index[-1] - df.index[-2]).total_seconds() != 300:
         return None
-    bar_end = df.index[-1].to_pydatetime() + timedelta(minutes=1)
+    bar_end = df.index[-1].to_pydatetime() + timedelta(minutes=5)
     age = (current - bar_end).total_seconds() / 60
     if not 0 <= age <= MAX_BAR_AGE or (df.iloc[-2:]["Volume"] <= 0).any():
         return None
@@ -983,14 +983,14 @@ def crossing_signal(frame, stock, current):
 
 
 def touch_signal(frame, stock, current):
-    """使用最新可見1分K高低價判斷觸價，包含尚未收盤的K棒。"""
-    df = completed_bars(frame, current + timedelta(minutes=1))
+    """使用最新可見5分K高低價判斷觸價，包含尚未收盤的K棒。"""
+    df = completed_bars(frame, current + timedelta(minutes=5))
     df = df[[stamp.to_pydatetime() <= current for stamp in df.index]]
     if df.empty:
         return None
     stamp = df.index[-1].to_pydatetime()
     age = (current - stamp).total_seconds() / 60
-    if not 0 <= age <= MAX_BAR_AGE + 1:
+    if not 0 <= age <= MAX_BAR_AGE + 5:
         return None
     row = df.iloc[-1]
     values = [number(row[field]) for field in ("Open", "High", "Low", "Close", "Volume")]
@@ -999,7 +999,7 @@ def touch_signal(frame, stock, current):
     opening, high, low, price, volume = values
     if volume <= 0 or min(opening, low, price) <= 0 or not low <= min(opening, price) <= max(opening, price) <= high:
         return None
-    previous = float(df.iloc[-2]["Close"]) if len(df) >= 2 and (df.index[-1] - df.index[-2]).total_seconds() == 60 else opening
+    previous = float(df.iloc[-2]["Close"]) if len(df) >= 2 and (df.index[-1] - df.index[-2]).total_seconds() == 300 else opening
     touched = []
     for name, field in (("壓力 NH", "cdp_resistance"), ("交界 CDP", "pivot"), ("支撐 NL", "support")):
         level = stock[field]
@@ -1009,7 +1009,7 @@ def touch_signal(frame, stock, current):
     if not touched:
         return None
     return {"price": price, "previous": previous, "crossed": touched,
-            "bar_at": stamp.isoformat(), "bar_complete": stamp + timedelta(minutes=1) <= current,
+            "bar_at": stamp.isoformat(), "bar_complete": stamp + timedelta(minutes=5) <= current,
             "high": high, "low": low, "age_minutes": round(age, 1), **volume_metrics(df)}
 
 
@@ -1041,12 +1041,12 @@ def send_crossing(stock, signal, demo=False):
     direction = signal["crossed"][0]["direction"]
     lines = [f"**{'🔴 ⬆ 收盤確認上穿' if item['direction'] == 'up' else '🟢 ⬇ 收盤確認下穿'}｜{item['name']} {item['level']:.2f}**"
              for item in signal["crossed"]]
-    end = datetime.fromisoformat(signal["bar_at"]) + timedelta(minutes=1)
+    end = datetime.fromisoformat(signal["bar_at"]) + timedelta(minutes=5)
     description = (f"前根收盤 {signal['previous']:.2f} → 本根收盤 **{signal['price']:.2f}**\n"
-                   + "\n".join(lines) + f"\n1分K收盤：{end:%Y-%m-%d %H:%M}\n"
+                   + "\n".join(lines) + f"\n5分K收盤：{end:%Y-%m-%d %H:%M}\n"
                    + ("格式示範，未觸發真實收盤穿越。" if demo else
                       f"行情距今 {signal['age_minutes']:.1f} 分；僅確認收盤穿越價位，未確認回測、反轉或交易機會。"))
-    send_embeds("🧪 收盤穿越卡片格式測試" if demo else "🔔 1分K收盤確認穿越",
+    send_embeds("🧪 收盤穿越卡片格式測試" if demo else "🔔 5分K收盤確認穿越",
                 [stock_card(stock,
                     ("🧪 示範｜" if demo else "") + ("🔴 收盤確認上穿" if direction == "up" else "🟢 收盤確認下穿")
                     + signal["crossed"][0]["name"].split()[0] + f" {signal['crossed'][0]['level']:.2f}",
@@ -1060,11 +1060,11 @@ def send_touch(stock, signal, demo=False):
     stamp = datetime.fromisoformat(signal["bar_at"])
     status = "已收盤" if signal.get("bar_complete", False) else "尚未收盤，量仍累計"
     description = ("\n".join(lines) + f"\n目前可見成交價 **{signal['price']:.2f}**"
-                   + f"\n本分K區間 **{signal['low']:.2f}～{signal['high']:.2f}**"
-                   + f"\n1分K起始：{stamp:%Y-%m-%d %H:%M}｜{status}\n"
+                   + f"\n本5分K區間 **{signal['low']:.2f}～{signal['high']:.2f}**"
+                   + f"\n5分K起始：{stamp:%Y-%m-%d %H:%M}｜{status}\n"
                    + ("格式示範，不是真實觸價訊號。" if demo else
                       f"K棒起始距今 {signal['age_minutes']:.1f} 分；收到觸價資料即推播，不等收盤。"))
-    send_embeds("🧪 到價卡片格式測試" if demo else "🔔 到價提醒｜不等1分K收盤",
+    send_embeds("🧪 到價卡片格式測試" if demo else "🔔 到價提醒｜不等5分K收盤",
         [stock_card(stock,
                     ("🧪 示範｜" if demo else "") + ("🔴 " if direction == "up" else "🟢 ")
                     + "觸及" + signal["crossed"][0]["name"].split()[0] + f" {signal['crossed'][0]['level']:.2f}",
@@ -1072,10 +1072,10 @@ def send_touch(stock, signal, demo=False):
 
 
 def send_strategy(stock, signal, current, notification_number):
-    end = datetime.fromisoformat(signal["bar_at"]) + timedelta(minutes=1)
+    end = datetime.fromisoformat(signal["bar_at"]) + timedelta(minutes=5)
     long = stock["direction"] == "long"
-    description = (f"觀察價 **{signal['price']:.2f}**｜1分K收盤 {end:%H:%M}\n"
-        + ("放量上穿開盤前5根高點，站上VWAP與前收。" if long else
+    description = (f"觀察價 **{signal['price']:.2f}**｜5分K收盤 {end:%H:%M}\n"
+        + ("放量上穿開盤首根5分K高點，站上VWAP與前收。" if long else
            "測壓失敗，後2根量縮收跌，下穿測壓K低點並位於VWAP下方。")
         + f"\n本日通知 {notification_number}/{MAX_SIGNALS_PER_DAY}｜規則分數 {stock['score']}"
         + f"\n行情距今 {signal['age_minutes']:.1f}分｜推播 {current:%H:%M:%S}")
@@ -1084,7 +1084,7 @@ def send_strategy(stock, signal, current, notification_number):
              {"name": "VWAP", "value": f"{signal['vwap']:.2f}", "inline": True},
              {"name": "型態失效參考", "value": f"{signal['stop']:.2f}", "inline": True}]
     send_embeds("📈 做多條件成立" if long else "📉 做空條件成立",
-                [stock_card(stock, "做多1分K" if long else "做空1分K", description,
+                [stock_card(stock, "做多5分K" if long else "做空5分K", description,
                             stock["direction"], extra + volume_fields(signal))])
 
 
@@ -1092,23 +1092,23 @@ def send_monitor_cards(stocks, asof):
     for direction in ("long", "short"):
         selected = [item for item in stocks if item["direction"] == direction]
         if selected:
-            send_embeds(f"🔎 {'做多' if direction == 'long' else '做空'}1分K候選名單｜資料日 {asof}",
+            send_embeds(f"🔎 {'做多' if direction == 'long' else '做空'}5分K候選名單｜資料日 {asof}",
                 [stock_card(item, f"#{rank}", f"前收 **{item['close']:.2f}**｜規則分數 {item['score']}\n"
                     "觸及壓力／交界／支撐就提醒，不等收盤；另保留原有策略條件。", direction)
                  for rank, item in enumerate(selected, 1)])
 
 
 def test_cards():
-    send_embeds("✅ 做多＋做空1分K卡片連線測試", [{
+    send_embeds("✅ 做多＋做空5分K卡片連線測試", [{
         "title": "卡片格式已啟用", "color": 0x5865F2,
-        "description": "平日台灣08:55起執行，09:00至13:30監控。每60秒檢查1分K，含尚未收盤K。\n"
-            "到價即提醒，不等待收盤；另發1分K收盤確認上穿／下穿卡片。由下接近亮紅色、由上接近亮綠色，觸價文字加粗。附壓力NH、交界CDP、支撐NL、本根1分K量、前20根均量與放量倍數。\n"
+        "description": "平日台灣08:55起執行，09:00至13:30監控。每60秒檢查5分K，含尚未收盤K。\n"
+            "到價即提醒，不等待收盤；另發5分K收盤確認上穿／下穿卡片。由下接近亮紅色、由上接近亮綠色，觸價文字加粗。附壓力NH、交界CDP、支撐NL、本根5分K量、前20根均量與放量倍數。\n"
             "行情可能延遲、排程可能晚啟動。以下是示範數值，未產生真實訊號。"}])
     stock = {"code": "示範", "name": "格式測試", **cdp_levels(110, 90, 100, "示範")}
     for previous, price in ((99, 101), (101, 99)):
         signal = {"previous": previous, "price": price, "age_minutes": 0,
                   "bar_at": now_tw().isoformat(), "volume_shares": 500000,
-                  "volume_base_shares": 200000, "volume_ratio_1m": 2.5, "volume_base_count": 20, "crossed": [{"name": "交界 CDP", "level": 100,
+                  "volume_base_shares": 200000, "volume_ratio_5m": 2.5, "volume_base_count": 20, "crossed": [{"name": "交界 CDP", "level": 100,
                        "direction": "up" if price > previous else "down"}]}
         send_touch(stock, {**signal, "low": 99, "high": 101, "bar_complete": False}, demo=True)
         send_crossing(stock, {**signal, "bar_complete": True}, demo=True)
@@ -1162,7 +1162,7 @@ def monitor(once=False):
     stocks = [{**item, "direction": "short"} for item in shortlist["stocks"]]
     stocks += long_candidates(asof)
     stocks = attach_levels(stocks, asof)
-    events = load("events.json", {})
+    events = load("events_5m.json", {})
 
     earliest = (
         current.date() - timedelta(days=7)
@@ -1179,10 +1179,10 @@ def monitor(once=False):
     )
 
     send_discord(
-        f"🔎 做多＋做空1分K監控啟動｜{current:%Y-%m-%d %H:%M}\n"
+        f"🔎 做多＋做空5分K監控啟動｜{current:%Y-%m-%d %H:%M}\n"
         f"候選資料日：{asof}\n"
         f"{names}\n"
-        "每60秒檢查1分鐘K（含未收盤），觸及價位就提醒，另發1分K收盤確認穿越；行情可能延遲。\n"
+        "每60秒檢查5分鐘K（含未收盤），觸及價位就提醒，另發5分K收盤確認穿越；行情可能延遲。\n"
         "訊號是條件提醒，不是立即下單指令。"
     )
 
@@ -1190,7 +1190,7 @@ def monitor(once=False):
 
     seen_today = False
     failures = 0
-    crossings = load("crossings.json", {})
+    crossings = load("crossings_5m.json", {})
     crossings = {key: value for key, value in crossings.items() if key[:10] >= earliest}
 
     while True:
@@ -1203,7 +1203,7 @@ def monitor(once=False):
             try:
                 data = download(
                     sorted({stock["ticker"] for stock in stocks}),
-                    "1m",
+                    "5m",
                     "5d",
                 )
 
@@ -1225,7 +1225,7 @@ def monitor(once=False):
                                 individual = {**crossing, "crossed": [item]}
                                 send_touch(stock, individual)
                                 crossings[cross_key] = individual
-                                save("crossings.json", crossings)
+                                save("crossings_5m.json", crossings)
 
                     confirmed = crossing_signal(df, stock, current)
                     if confirmed:
@@ -1235,7 +1235,7 @@ def monitor(once=False):
                                 individual = {**confirmed, "crossed": [item], "bar_complete": True}
                                 send_crossing(stock, individual)
                                 crossings[confirm_key] = individual
-                                save("crossings.json", crossings)
+                                save("crossings_5m.json", crossings)
 
                     signal = (long_signal if stock["direction"] == "long" else short_signal)(df, stock, current)
                     if signal:
@@ -1253,7 +1253,7 @@ def monitor(once=False):
                         )
 
                         bar_end = (
-                            bar_at + timedelta(minutes=1)
+                            bar_at + timedelta(minutes=5)
                         )
 
                         event_prefix = f"{current.date()}:{event_stock['ticker']}"
@@ -1266,7 +1266,7 @@ def monitor(once=False):
                         send_strategy(stock, signal, current, notification_number)
 
                         events[key] = signal
-                        save("events.json", events)
+                        save("events_5m.json", events)
 
                 failures = 0
 
@@ -1356,6 +1356,3 @@ if __name__ == "__main__":
             "未輸出敏感錯誤內容。"
         )
         raise SystemExit(1)
-
-
-
