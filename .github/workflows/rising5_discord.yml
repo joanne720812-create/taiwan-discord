@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: test驗證最新選股與Discord／scan盤後更新／monitor盤中監控
+        description: test驗證選股／scan盤後更新／monitor盤中監控／connection頻道連線
         type: choice
         default: test
-        options: [test, scan, monitor]
+        options: [test, scan, monitor, connection]
   schedule:
     - cron: '47 8 * * 1-5'
     - cron: '40 0 * * 1-5'
@@ -54,16 +54,36 @@ jobs:
         env:
           MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '40 0 * * 1-5' && 'monitor' || 'scan') }}
           INTRADAY_WEBHOOK_URL: ${{ secrets.DISCORD_INTRADAY_WEBHOOK_URL }}
+          RISING_WEBHOOK_URL: ${{ secrets.DISCORD_RISING_WEBHOOK_URL }}
         run: |
           python -m py_compile rising5_discord.py short_discord.py
-          if [ "$MODE" != "scan" ]; then
+          if [ "$MODE" = "monitor" ] || [ "$MODE" = "test" ]; then
             if [ -z "$INTRADAY_WEBHOOK_URL" ]; then
               echo "Missing intraday webhook"
               exit 1
             fi
             export DISCORD_WEBHOOK_URL="$INTRADAY_WEBHOOK_URL"
+          else
+            if [ -z "$RISING_WEBHOOK_URL" ]; then
+              echo "Missing rising channel webhook"
+              exit 1
+            fi
+            export DISCORD_WEBHOOK_URL="$RISING_WEBHOOK_URL"
           fi
-          python rising5_discord.py "$MODE"
+          if [ "$MODE" = "connection" ]; then
+            python - <<'PY'
+          import json, os, urllib.request
+          payload = {"content": "✅ 起漲股頻道連線測試成功\n之後的盤後起漲股名單會發送到這裡。做多／做空名單在「盤後做多跟做空」，盤中提醒在「🔔盤中5分K」。", "allowed_mentions": {"parse": []}}
+          req = urllib.request.Request(os.environ["DISCORD_WEBHOOK_URL"] + "?wait=true", data=json.dumps(payload, ensure_ascii=False).encode(), headers={"Content-Type": "application/json", "User-Agent": "TaiwanStockDiscord/1.0"}, method="POST")
+          with urllib.request.urlopen(req, timeout=30) as response:
+              accepted = json.load(response)
+          if accepted.get("channel_id") != "1556623631885271101":
+              raise RuntimeError("Unexpected destination channel")
+          print("Discord confirmed test in rising channel")
+          PY
+          else
+            python rising5_discord.py "$MODE"
+          fi
       - name: 保存自動更新名單與通知紀錄
         if: always()
         uses: actions/upload-artifact@v4
