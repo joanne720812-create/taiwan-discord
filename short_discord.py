@@ -29,6 +29,7 @@ TOP_N = 10
 MAX_BAR_AGE = 20
 MAX_SIGNALS_PER_DAY = 5
 SIGNAL_COOLDOWN_MINUTES = 15
+FOLLOWUP_VERSION = 1
 
 LOG = logging.getLogger("short_bot")
 
@@ -1084,18 +1085,133 @@ def send_touch(stock, signal, demo=False):
 def send_strategy(stock, signal, current, notification_number):
     end = datetime.fromisoformat(signal["bar_at"]) + timedelta(minutes=5)
     long = stock["direction"] == "long"
+    target = start_followup(stock, signal)["target"]
     description = (f"觀察價 **{signal['price']:.2f}**｜5分K收盤 {end:%H:%M}\n"
         + ("放量上穿開盤首根5分K高點，站上VWAP與前收。" if long else
            "測壓失敗，後2根量縮收跌，下穿測壓K低點並位於VWAP下方。")
         + f"\n本日通知 {notification_number}/{MAX_SIGNALS_PER_DAY}｜規則分數 {stock['score']}"
-        + f"\n行情距今 {signal['age_minutes']:.1f}分｜推播 {current:%H:%M:%S}")
+        + f"\n行情距今 {signal['age_minutes']:.1f}分｜推播 {current:%H:%M:%S}"
+        + "\n**開始訊號模擬追蹤**：後續續抱、移動停損與出場提醒；未收到實際成交回報。")
     extra = [{"name": "🔴 策略壓力（開盤5分鐘高點）" if long else "🔴 策略壓力（前20交易日高點）",
               "value": f"{signal['resistance']:.2f}", "inline": True},
              {"name": "VWAP", "value": f"{signal['vwap']:.2f}", "inline": True},
-             {"name": "型態失效參考", "value": f"{signal['stop']:.2f}", "inline": True}]
+             {"name": "型態失效參考", "value": f"{signal['stop']:.2f}", "inline": True},
+             {"name": "2R停利參考（初始風險的兩倍）",
+              "value": f"{target:.2f}",
+              "inline": True}]
     send_embeds("📈 做多條件成立" if long else "📉 做空條件成立",
                 [stock_card(stock, "做多5分K" if long else "做空5分K", description,
                             stock["direction"], extra + volume_fields(signal))])
+
+
+def start_followup(stock, signal):
+    """沿用原策略進場及停損，不修改選股或把提醒當成實際成交。"""
+    direction = 1 if stock["direction"] == "long" else -1
+    entry, stop = float(signal["price"]), float(signal["stop"])
+    risk = direction * (entry - stop)
+    if not all(math.isfinite(v) and v > 0 for v in (entry, stop)) or risk <= 0:
+        raise ValueError("追蹤進場／停損無效")
+    return {"version": FOLLOWUP_VERSION, "day": signal["bar_at"][:10],
+            "direction": stock["direction"], "entry": entry, "stop": stop,
+            "risk": risk, "target": entry + direction * risk * 2,
+            "last_bar": signal["bar_at"], "last_hold": signal["bar_at"]}
+
+
+def followup_card(stock, position, row, bar_at, age, title, detail):
+    direction = 1 if position["direction"] == "long" else -1
+    price = float(row["Close"])
+    pct = direction * (price / position["entry"] - 1) * 100
+    end = datetime.fromisoformat(bar_at) + timedelta(minutes=5)
+    description = (f"{detail}\n完成5分K收盤 **{price:.2f}**｜{end:%m/%d %H:%M}\n"
+                   f"訊號參考進場 **{position['entry']:.2f}**｜浮動報酬 **{pct:+.2f}%**\n"
+                   f"行情距今 {age:.1f}分；**模擬追蹤，非實際持倉或成交損益，未扣成本。**")
+    extra = [{"name": "目前停損參考", "value": f"{position['stop']:.2f}", "inline": True},
+             {"name": "2R停利參考", "value": f"{position['target']:.2f}", "inline": True}]
+    return stock_card(stock, title, description, position["direction"], extra)
+
+
+def advance_followup(frame, stock, current, position):
+    """返回(新部位或None, 卡片, 是否已處理)。同根不重報，缺K中斷追蹤。
+    僅用最新完成K；新停損下一根生效。初始風險為1R、目標2R，
+    收盤盈利≥1R才把停損收緊至進場、交界或前根極值的可用價位。
+    """
+    df = completed_bars(frame, current)
+    if df.empty:
+        return position, [], False
+    row = df.iloc[-1]
+    bar_at = df.index[-1].isoformat()
+    stamp = df.index[-1].to_pydatetime()
+    end = stamp + timedelta(minutes=5)
+    age = (current-end).total_seconds()/60
+    if not 0 <= age <= MAX_BAR_AGE:
+        return position, [], False
+    values = [number(row[k]) for k in ("Open", "High", "Low", "Close", "Volume")]
+    if any(v is None or v <= 0 for v in values):
+        return position, [], False
+    opening, high, low, price, volume = values
+    if not low <= min(opening, price) <= max(opening, price) <= high:
+        return position, [], False
+    if position.get("day") != str(current.date()) or position.get("version") != FOLLOWUP_VERSION:
+        card = followup_card(stock, position, row, bar_at, age, "⚠️ 舊訊號追蹤已失效",
+                             "未取得有效出場紀錄；請核對實際部位，停止舊訊號模擬追蹤。")
+        return None, [card], True
+    if bar_at <= position["last_bar"]:
+        return position, [], False
+    if stamp-datetime.fromisoformat(position["last_bar"]) != timedelta(minutes=5):
+        card = followup_card(stock, position, row, bar_at, age, "⚠️ 行情追蹤中斷",
+                             "中間有未監控K棒，無法判定是否已觸及停損／停利；停止模擬續抱，請核對實際部位。")
+        return None, [card], True
+    updated = {**position, "last_bar": bar_at}
+    direction = 1 if position["direction"] == "long" else -1
+    stop_hit = low <= position["stop"] if direction == 1 else high >= position["stop"]
+    target_hit = high >= position["target"] if direction == 1 else low <= position["target"]
+    if stop_hit or target_hit or end.time() >= clock(13, 20):
+        reason = ("同根觸及停損與停利，無法判定先後；保守列停損提醒。" if stop_hit and target_hit
+                  else "完成5分K範圍觸及原停損；需核對現價與實際成交。" if stop_hit
+                  else "完成5分K範圍觸及2R停利參考；需核對現價與實際成交。" if target_hit
+                  else "13:20後完成K：當沖時間出場提醒。行情可能延遲，請立即核對實際部位。")
+        title = "🚪 多單賣出提醒" if direction == 1 else "🚪 空單回補提醒"
+        return None, [followup_card(stock, updated, row, bar_at, age, title, reason)], True
+    if direction*(price-position["entry"]) >= position["risk"]:
+        candidates = [position["entry"], float(stock["pivot"])]
+        if len(df) >= 2:
+            previous = df.iloc[-2]
+            candidates.append(float(previous["Low"] if direction == 1 else previous["High"]))
+        usable = [v for v in candidates if math.isfinite(v) and v > 0
+                  and direction*(price-v) > 0 and direction*(v-position["stop"]) > 0]
+        if usable:
+            new_stop = max(usable) if direction == 1 else min(usable)
+            updated.update(stop=new_stop, last_hold=bar_at)
+            detail = (f"停損 **{position['stop']:.2f} → {new_stop:.2f}**，**下一根5分K起生效**。\n"
+                      + ("之後下跌觸及則提醒賣出。" if direction == 1 else "之後反彈觸及則提醒回補。")
+                      + "\n盈利已達初始1R，依進場價／交界／前根極值收緊停損；只收緊、不放寬。")
+            return updated, [followup_card(stock, updated, row, bar_at, age, "🛡️ 移動停損提醒", detail)], True
+    if stamp-datetime.fromisoformat(position["last_hold"]) >= timedelta(minutes=15):
+        updated["last_hold"] = bar_at
+        return updated, [followup_card(stock, updated, row, bar_at, age, "⚓ 續抱條件尚有效",
+                           "截至本根完成K，未觸及原停損或2R停利參考；模擬追蹤持續。")], True
+    return updated, [], True
+
+
+def test_followup_cards():
+    """送到盤中既有頻道，全部明確標示為合成示範，不建立部位。"""
+    stock = {"code": "示範", "name": "連續通知格式", "direction": "short",
+             **cdp_levels(104, 96, 100, "示範")}
+    bar_at = now_tw().replace(second=0, microsecond=0).isoformat()
+    pos = start_followup(stock, {"price": 100, "stop": 101, "bar_at": bar_at})
+    cards = []
+    examples = [("📍 做空進場條件", 100, "訊號參考100、初始停損101，開始模擬追蹤。"),
+                ("⚓ 續抱條件尚有效", 99.7, "尚未觸及停損101或2R目標98。"),
+                ("🛡️ 移動停損提醒", 99, "停損101 → 100；下一根起生效，反彈觸及100才提醒回補。"),
+                ("🚪 空單回補提醒", 98, "完成K範圍觸及2R參考98；請核對實際成交。")]
+    for title, price, detail in examples:
+        if "移動" in title or "回補" in title:
+            pos = {**pos, "stop": 100}
+        card = followup_card(stock, pos, {"Close": price}, bar_at, 0, "🧪 示範｜"+title, detail)
+        card["description"] = "**合成示範，非真實股票、進場訊號或持倉。**\n"+card["description"]
+        card["footer"] = {"text": "格式測試｜未建立模擬部位｜非真實交易"}
+        cards.append(card)
+    send_embeds("✅ 連續通知格式測試：每則附壓力、交界、支撐", cards)
 
 
 def send_monitor_cards(stocks, asof):
@@ -1213,6 +1329,7 @@ def monitor(once=False):
     failures = 0
     crossings = load("crossings_5m.json", {})
     crossings = {key: value for key, value in crossings.items() if key[:10] >= earliest}
+    positions = load("positions_5m.json", {})
 
     while True:
         current = now_tw()
@@ -1262,13 +1379,28 @@ def monitor(once=False):
                     if signal:
                         signal.update(volume_metrics(bars))
                     event_stock = {**stock, "ticker": stock["ticker"] + ":" + stock["direction"]}
+                    position_key = event_stock["ticker"]
+                    was_tracking = position_key in positions
+                    if was_tracking:
+                        position, cards, processed = advance_followup(df, stock, current, positions[position_key])
+                        if processed:
+                            if position is None:
+                                positions.pop(position_key, None)
+                            else:
+                                positions[position_key] = position
+                            # 先保存去重狀態；未知送達結果不重送、不假稱已成交。
+                            save("positions_5m.json", positions)
+                            for card in cards:
+                                send_embeds("🔔 5分K訊號連續追蹤（模擬部位）", [card])
 
                     key = (
                         f"{current.date()}:{event_stock['ticker']}:{signal['bar_at']}"
                         if signal else ""
                     )
 
-                    if signal and notification_allowed(signal, event_stock, current, events):
+                    if (signal and not was_tracking
+                            and current.time() < clock(13, 0)
+                            and notification_allowed(signal, event_stock, current, events)):
                         bar_at = datetime.fromisoformat(
                             signal["bar_at"]
                         )
@@ -1284,10 +1416,11 @@ def monitor(once=False):
                             for event_key in events
                         )
 
-                        send_strategy(stock, signal, current, notification_number)
-
                         events[key] = signal
+                        positions[position_key] = start_followup(stock, signal)
                         save("events_5m.json", events)
+                        save("positions_5m.json", positions)
+                        send_strategy(stock, signal, current, notification_number)
 
                 failures = 0
 
@@ -1336,7 +1469,7 @@ def main():
 
     parser.add_argument(
         "mode",
-        choices=["scan", "monitor", "test"],
+        choices=["scan", "monitor", "test", "followup-test"],
     )
 
     parser.add_argument(
@@ -1351,7 +1484,10 @@ def main():
 
     args = parser.parse_args()
 
-    if args.mode == "test":
+    if args.mode == "followup-test":
+        test_followup_cards()
+
+    elif args.mode == "test":
         test_cards()
 
     elif args.mode == "scan":
