@@ -131,6 +131,13 @@ def scan(latest=False, notify=True):
         return None
     snapshots = [base.official_snapshot(market) for market in base.SOURCES]
     dates = {d for d, _ in snapshots}
+    if len(dates) > 1:
+        newest = max(dates)
+        if newest > current.date():
+            raise RuntimeError("官方行情日期超前；不更新名單")
+        snapshots = [base.official_snapshot(market, newest) if day < newest else (day, rows)
+                     for market, (day, rows) in zip(base.SOURCES, snapshots)]
+        dates = {day for day, _ in snapshots}
     if len(dates) != 1:
         raise RuntimeError("上市上櫃資料日期不同；不更新名單")
     asof = next(iter(dates))
