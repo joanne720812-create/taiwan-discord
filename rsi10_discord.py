@@ -160,15 +160,30 @@ def scan(latest=False, dry_run=False, notify=True, slot="daily"):
 
 def daily_payload(report, slot):
     label = "盤前候選" if slot == "morning" else "下一交易日觀察候選"
-    lines = [f"📋 RSI強勢觀察｜{label} {len(report['stocks'])}檔", f"日線資料日：{report['asof']}",
-             "條件：日RSI14≥50、日量≥前5日均量、收盤>5日線、RSI較前日上升。"]
-    for n, s in enumerate(report["stocks"], 1):
-        lines.append(f"{n}. **{s['code']} {s['name']}**｜收盤{s['official_close']:g}\n日RSI{s['daily_rsi']:.1f}｜日量比{s['daily_relvol']:.2f}倍\n壓力{s['resistance']:.2f}｜交界{s['pivot']:.2f}｜支撐{s['support']:.2f}")
-    if not report["stocks"]:
-        lines.append("本次沒有符合股票，不湊滿10檔。")
-    lines.append(f"上市＋上櫃流動性初篩{report['total']}檔；歷史資料可用率{report['coverage']:.0%}。近40根日K還原比例變動者暫排除。")
-    lines.append("監看9:00～13:30完成5分K；RSI≥60且量比≥1.5倍每根都提醒，附5分K壓力／交界／支撐。量比相對前20根完成K棒，包含前日。行情與排程可能延遲，非買進指令、不保證漲停。")
-    return "\n\n".join(lines)
+    cards = []
+    for n, stock in enumerate(report["stocks"], 1):
+        cards.append({
+            "title": f"{n:02d}｜{stock['code']} {stock['name']}",
+            "color": 0xE74C3C,
+            "description": f"日線資料日：{report['asof']}\n{label}｜日RSI14量價篩選",
+            "fields": [
+                {"name": "收盤價", "value": f"**{stock['official_close']:g}**", "inline": True},
+                {"name": "日線 RSI14", "value": f"**{stock['daily_rsi']:.1f}**", "inline": True},
+                {"name": "日量比", "value": f"**{stock['daily_relvol']:.2f} 倍**", "inline": True},
+                {"name": "🔴 壓力", "value": f"**{stock['resistance']:.2f}**", "inline": True},
+                {"name": "🟡 交界", "value": f"**{stock['pivot']:.2f}**", "inline": True},
+                {"name": "🟢 支撐", "value": f"**{stock['support']:.2f}**", "inline": True},
+            ],
+            "footer": {"text": "日線CDP價位｜候選排序不是漲停機率｜非買進指令"},
+        })
+    content = (f"📋 **RSI強勢觀察｜{label} {len(cards)}檔圖卡**\n"
+               f"日線資料日：{report['asof']}\n"
+               "條件：日RSI14≥50、日量≥前5日均量、收盤>5日線、RSI較前日上升。\n"
+               f"上市＋上櫃流動性初篩{report['total']}檔；歷史資料可用率{report['coverage']:.0%}。\n"
+               "監看9:00～13:30完成5分K；RSI≥60且量比≥1.5倍，每根符合都提醒，持續強勢也通知。行情與排程可能延遲，不保證漲停。")
+    if not cards:
+        content += "\n本次沒有符合股票，不湊滿10檔。"
+    return {"content": content, "embeds": cards}
 
 
 def morning_signals(frame, stock, current, full_session=False):
