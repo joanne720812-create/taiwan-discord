@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: test名單驗證／scan盤後選股／monitor盤中監控／connection頻道連線
+        description: test名單驗證／scan盤後選股／monitor盤中監控／connection頻道連線／followup-test連續通知示範
         type: choice
         default: test
-        options: [test, scan, monitor, connection]
+        options: [test, scan, monitor, connection, followup-test]
       scan_date:
         description: 資料日期 YYYY-MM-DD；留空使用台灣今天
         type: string
@@ -64,6 +64,7 @@ jobs:
           INTRADAY_WEBHOOK_URL: ${{ secrets.DISCORD_INTRADAY_WEBHOOK_URL }}
         run: |
           python -m py_compile short_discord.py stock_discord.py
+          python -m unittest test_followup.py -v
           if [ "$MODE" != "scan" ]; then
             if [ -z "$INTRADAY_WEBHOOK_URL" ]; then
               echo "Missing intraday webhook; stopping to prevent sending to the wrong channel"
@@ -114,3 +115,4 @@ jobs:
           path: state/*.json
           if-no-files-found: ignore
           retention-days: 14
+
