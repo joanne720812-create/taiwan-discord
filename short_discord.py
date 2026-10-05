@@ -1193,25 +1193,32 @@ def advance_followup(frame, stock, current, position):
     return updated, [], True
 
 
-def test_followup_cards():
+def test_followup_cards(direction="short"):
     """送到盤中既有頻道，全部明確標示為合成示範，不建立部位。"""
-    stock = {"code": "示範", "name": "連續通知格式", "direction": "short",
+    if direction not in ("long", "short"):
+        raise ValueError("示範方向需為long或short")
+    long = direction == "long"
+    stock = {"code": "示範", "name": "做多連續通知" if long else "做空連續通知", "direction": direction,
              **cdp_levels(104, 96, 100, "示範")}
     bar_at = now_tw().replace(second=0, microsecond=0).isoformat()
-    pos = start_followup(stock, {"price": 100, "stop": 101, "bar_at": bar_at})
+    pos = start_followup(stock, {"price": 100, "stop": 99 if long else 101, "bar_at": bar_at})
     cards = []
-    examples = [("📍 做空進場條件", 100, "訊號參考100、初始停損101，開始模擬追蹤。"),
+    examples = ([("🔴 📍 做多進場條件", 100, "訊號參考100、初始停損99，開始模擬追蹤。"),
+                ("🔴 ⚓ 做多續抱條件尚有效", 100.3, "尚未觸及停損99或2R目標102。"),
+                ("🔴 🛡️ 做多移動停損提醒", 101, "停損99 → 100；下一根起生效，下跌觸及100才提醒賣出。"),
+                ("🔴 🚪 多單賣出提醒", 102, "完成K範圍觸及2R參考102；請核對實際成交。")]
+                if long else [("📍 做空進場條件", 100, "訊號參考100、初始停損101，開始模擬追蹤。"),
                 ("⚓ 續抱條件尚有效", 99.7, "尚未觸及停損101或2R目標98。"),
                 ("🛡️ 移動停損提醒", 99, "停損101 → 100；下一根起生效，反彈觸及100才提醒回補。"),
-                ("🚪 空單回補提醒", 98, "完成K範圍觸及2R參考98；請核對實際成交。")]
+                ("🚪 空單回補提醒", 98, "完成K範圍觸及2R參考98；請核對實際成交。")])
     for title, price, detail in examples:
-        if "移動" in title or "回補" in title:
+        if "移動" in title or "回補" in title or "賣出" in title:
             pos = {**pos, "stop": 100}
         card = followup_card(stock, pos, {"Close": price}, bar_at, 0, "🧪 示範｜"+title, detail)
         card["description"] = "**合成示範，非真實股票、進場訊號或持倉。**\n"+card["description"]
         card["footer"] = {"text": "格式測試｜未建立模擬部位｜非真實交易"}
         cards.append(card)
-    send_embeds("✅ 連續通知格式測試：每則附壓力、交界、支撐", cards)
+    send_embeds("✅ " + ("🔴 做多" if long else "🟢 做空") + "連續通知格式測試：每則附壓力、交界、支撐", cards)
 
 
 def send_monitor_cards(stocks, asof):
@@ -1469,7 +1476,7 @@ def main():
 
     parser.add_argument(
         "mode",
-        choices=["scan", "monitor", "test", "followup-test"],
+        choices=["scan", "monitor", "test", "followup-test", "followup-long-test"],
     )
 
     parser.add_argument(
@@ -1484,7 +1491,10 @@ def main():
 
     args = parser.parse_args()
 
-    if args.mode == "followup-test":
+    if args.mode == "followup-long-test":
+        test_followup_cards("long")
+
+    elif args.mode == "followup-test":
         test_followup_cards()
 
     elif args.mode == "test":
