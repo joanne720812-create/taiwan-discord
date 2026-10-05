@@ -231,7 +231,10 @@ def main():
         webhook = os.environ.get('DISCORD_WEBHOOK_URL', '')
         if not webhook.startswith('https://discord.com/api/webhooks/'):
             raise RuntimeError('請設定 DISCORD_WEBHOOK_URL（GitHub Actions Secret）')
-        send(webhook, payload)
+        for offset in range(0, len(payload['embeds']), 5):
+            part = {**payload, 'embeds': payload['embeds'][offset:offset+5]}
+            part['content'] = payload['content'] + f"\n卡片分組 {offset//5+1}/{(len(payload['embeds'])+4)//5}"
+            send(webhook, part)
         print(f'已推播 {len(selected)} 檔；資料日 {current[0]["date"]}')
 
 
