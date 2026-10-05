@@ -53,8 +53,16 @@ jobs:
       - name: 自動選股與5分K通知
         env:
           MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '40 0 * * 1-5' && 'monitor' || 'scan') }}
+          INTRADAY_WEBHOOK_URL: ${{ secrets.DISCORD_INTRADAY_WEBHOOK_URL }}
         run: |
           python -m py_compile rising5_discord.py short_discord.py
+          if [ "$MODE" != "scan" ]; then
+            if [ -z "$INTRADAY_WEBHOOK_URL" ]; then
+              echo "Missing intraday webhook"
+              exit 1
+            fi
+            export DISCORD_WEBHOOK_URL="$INTRADAY_WEBHOOK_URL"
+          fi
           python rising5_discord.py "$MODE"
       - name: 保存自動更新名單與通知紀錄
         if: always()
