@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: preview只驗證資料／connection連線測試／latest最新名單／scan盤後／monitor開盤監控
+        description: preview只驗證資料／connection連線測試／latest最新名單／scan盤後／monitor全日盤中監控
         type: choice
         default: preview
         options: [preview, connection, latest, scan, monitor]
@@ -23,7 +23,7 @@ concurrency:
 jobs:
   rsi10:
     runs-on: ubuntu-latest
-    timeout-minutes: 110
+    timeout-minutes: 350
     env:
       STATE_DIR: state_rsi10
       DISCORD_RSI_WEBHOOK_URL: ${{ secrets.DISCORD_RSI_WEBHOOK_URL }}
@@ -54,7 +54,7 @@ jobs:
           if [ -f rsi10-state.zip ]; then
             unzip -o rsi10-state.zip -d state_rsi10
           fi
-      - name: 執行RSI選股與開盤觀察
+      - name: 執行RSI選股與全日盤中觀察
         env:
           MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '25 0 * * 1-5' && 'monitor' || 'scan') }}
         run: |
