@@ -387,6 +387,51 @@ def daily_score(df, stock):
     return result, None
 
 
+
+def observation_score(df, stock):
+    values = df[['Open', 'High', 'Low', 'Close', 'Volume']].tail(65)
+    if not all(math.isfinite(float(x)) for x in values.to_numpy().flat):
+        return None
+    if (values[['Open', 'High', 'Low', 'Close']] <= 0).any().any() or (values['Volume'] < 0).any():
+        return None
+    if (values['High'] < values[['Open', 'Low', 'Close']].max(axis=1)).any() or (values['Low'] > values[['Open', 'High', 'Close']].min(axis=1)).any():
+        return None
+    close, high, low, volume = (df[k].astype(float) for k in ('Close', 'High', 'Low', 'Volume'))
+    price = float(close.iloc[-1])
+    ma20, ma60 = float(close.tail(20).mean()), float(close.tail(60).mean())
+    prior20 = float(close.iloc[-21:-1].mean())
+    base = float(volume.iloc[-21:-1].mean())
+    if base <= 0:
+        return None
+    ratio = float(volume.iloc[-1] / base)
+    level = float(high.iloc[-21:-1].max())
+    span = float(high.iloc[-1] - low.iloc[-1])
+    position = (price - float(low.iloc[-1])) / span if span > 0 else .5
+    score = (20 * (price > ma20) + 20 * (ma20 > ma60) + 15 * (ma20 > prior20)
+             + 15 * max(0, min(1, position)) + 15 * max(0, min(1, ratio / 1.5))
+             + 15 * max(0, 1 - abs(price / level - 1) / .1))
+    return {**stock, 'score': round(score, 1), 'close': price, 'trigger': level,
+            'volume_ratio': round(ratio, 2), 'status': 'watch',
+            'pattern': '等待突破或回測確認' if price > ma20 > ma60 and ma20 > prior20 else '趨勢或買點尚未確認'}
+
+
+def select_top(results, observations):
+    key = lambda item: (-item['score'], -item['value'], item['ticker'])
+    top, seen = [], set()
+    for item in sorted(results, key=key):
+        if item['ticker'] not in seen:
+            top.append({**item, 'status': 'confirmed'})
+            seen.add(item['ticker'])
+        if len(top) == TOP_N:
+            return top
+    for item in sorted(observations, key=key):
+        if item['ticker'] not in seen:
+            top.append(item)
+            seen.add(item['ticker'])
+        if len(top) == TOP_N:
+            break
+    return top
+
 def scan(asof, dry_run=False):
     current = now_tw()
 
@@ -426,6 +471,7 @@ def scan(asof, dry_run=False):
     log(f"上市＋上櫃初篩通過：{len(universe)}檔")
 
     results = []
+    observations = []
     failures = 0
     excluded = Counter()
 
@@ -487,6 +533,12 @@ def scan(asof, dry_run=False):
                     excluded["近65日還原價格比例變化"] += 1
                     continue
 
+            observation = observation_score(df, stock)
+            if observation is None:
+                failures += 1
+                excluded['價格或成交量資料無效'] += 1
+                continue
+            observations.append(observation)
             item, reason = daily_score(df, stock)
 
             if item:
@@ -534,27 +586,30 @@ def scan(asof, dry_run=False):
             item["ticker"],
         )
     )
-    top = results[:TOP_N]
+    top = select_top(results, observations)
 
     lines = [
-        f"📈 波段買點候選｜{len(top)}檔\n"
+        f"📈 波段觀察前10名｜{len(top)}檔\n"
         f"資料日期：{asof}｜收盤確認，非即時進場指令"
     ]
 
+    confirmed_count = sum(stock['status'] == 'confirmed' for stock in top)
+    lines.append(f'✅ 已符合買點 {confirmed_count}檔｜👀 等待買點 {len(top)-confirmed_count}檔')
     for rank, stock in enumerate(top, 1):
-        lines.append(
-            f"{rank}. {stock['name']} {stock['code']}"
-            f"｜{stock['pattern']}\n"
-            f"收盤 {stock['close']:.2f}"
-            f"｜觸發線 {stock['trigger']:.2f}\n"
-            f"停損參考 {stock['stop']:.2f}"
-            f"｜風險距離 {stock['risk_pct']:.2f}%\n"
-            f"量比 {stock['volume_ratio']:.2f}"
-            f"｜規則分數 {stock['score']}"
-        )
-
-    if not top:
-        lines.append("今天沒有符合條件的股票，不湊滿10檔。")
+        if stock['status'] == 'confirmed':
+            detail = (f"✅ 已符合買點｜{stock['pattern']}\n"
+                      f"收盤 {stock['close']:.2f}｜觸發線 {stock['trigger']:.2f}\n"
+                      f"停損參考 {stock['stop']:.2f}｜風險距離 {stock['risk_pct']:.2f}%\n"
+                      f"量比 {stock['volume_ratio']:.2f}｜買點分數 {stock['score']}")
+        else:
+            detail = (f"👀 等待買點｜{stock['pattern']}\n"
+                      f"收盤 {stock['close']:.2f}｜前20日高點 {stock['trigger']:.2f}\n"
+                      f"量比 {stock['volume_ratio']:.2f}｜觀察分數 {stock['score']}\n"
+                      '尚未符合買點，觀察價不是買進指令')
+        lines.append(f"{rank}. **{stock['name']} {stock['code']}**\n{detail}")
+    if len(top) < TOP_N:
+        lines.append(f'通過資料檢查的股票不足10檔，本次僅列{len(top)}檔。')
+    lines.append('買點分數與觀察分數用途不同，不跨類別比較。')
 
     adjustment_count = excluded["近65日還原價格比例變化"]
 
