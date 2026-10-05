@@ -1,5 +1,6 @@
 """上市＋上櫃盤後強勢股前五名，推播至 Discord。Python 3.11+，無第三方套件。"""
 import argparse
+import http.client
 import json
 import math
 import os
@@ -22,7 +23,7 @@ def get_json(url):
         try:
             with urllib.request.urlopen(req, timeout=35) as resp:
                 return json.load(resp)
-        except (OSError, ValueError):
+        except (OSError, ValueError, http.client.IncompleteRead):
             if attempt == 2:
                 raise
             time.sleep(2 ** attempt)
@@ -164,16 +165,20 @@ def message(stocks, date):
                             f'開高但量價未同步時不追價；跌破防守價應重新評估。'),
             'footer': {'text': f'資料日 {date}｜盤後資料；價位僅為前日 K 棒參考，非即時訊號或投資建議'}
         })
-    return {'content': f'📊 **台股盤後做多強勢股 TOP {len(stocks)}｜{date}**\n上市＋上櫃｜單日 5 條件評分，滿分 100；同分依漲幅、成交量排序。',
+    names = '\n'.join(f"{rank}. {s['code']} {s['name']}｜收盤 {fmt(s['close'])}" for rank, s in enumerate(stocks, 1))
+    return {'content': f'🔴 **做多觀察前{len(stocks)}檔｜盤後資料日 {date}**\n' + names + '\n上市＋上櫃｜單日5條件評分；這是下一交易日觀察名單，進場需等待5分K條件成立。',
             'embeds': embeds, 'allowed_mentions': {'parse': []}}
 
 
 def send(webhook, payload):
     data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-    req = urllib.request.Request(webhook, data=data, headers={'Content-Type': 'application/json', 'User-Agent': 'TaiwanStockDiscord/1.0'}, method='POST')
+    endpoint = webhook + ('&' if '?' in webhook else '?') + 'wait=true'
+    req = urllib.request.Request(endpoint, data=data, headers={'Content-Type': 'application/json', 'User-Agent': 'TaiwanStockDiscord/1.0'}, method='POST')
     with urllib.request.urlopen(req, timeout=30) as resp:
-        if resp.status not in (200, 204):
-            raise RuntimeError(f'Discord HTTP {resp.status}')
+        accepted = json.load(resp)
+    if len(accepted.get('embeds', [])) != len(payload.get('embeds', [])):
+        raise RuntimeError('Discord名單卡片數量未確認')
+    print(f"Discord已確認收到：{len(accepted.get('embeds', []))}張做多名單卡片＋文字總表")
 
 
 def main():
