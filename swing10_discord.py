@@ -1,6 +1,7 @@
 """台股波段買點前10名＋Discord推播＋篩選診斷紀錄。"""
 
 import argparse
+import http.client
 import json
 import logging
 import math
@@ -84,7 +85,7 @@ def get_json(url):
             ) as response:
                 return json.load(response)
 
-        except (urllib.error.URLError, ValueError, TimeoutError):
+        except (urllib.error.URLError, ValueError, TimeoutError, http.client.IncompleteRead):
             if attempt == 2:
                 raise RuntimeError("官方行情下載失敗") from None
 
