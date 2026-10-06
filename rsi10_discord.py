@@ -307,7 +307,16 @@ def main():
         elif mode == "connection":
             send("✅ RSI強勢觀察自動推播連線測試成功。\n排程：週一至週五8:25啟動盤前選股與開盤監控、17:15更新盤後候選。\n已延伸監看9:00～13:30完成5分K；符合強勢才通知，附5分K與日線壓力／交界／支撐。行情和排程可能延遲，不保證每天有強勢訊號。")
         elif mode == "latest":
-            scan(latest=True)
+            cached = base.load(REPORT, {})
+            cached_date = datetime.fromisoformat(cached["asof"]).date() if cached.get("asof") else None
+            age = (base.now_tw().date() - cached_date).days if cached_date else None
+            if age is not None and 0 <= age <= 1 and cached.get("coverage", 0) >= .9 and cached.get("stocks"):
+                payload = daily_payload(cached, "daily")
+                payload["content"] = "🔁 已驗證名單補發｜沿用原資料日與股票，加入盤前策略。\n" + payload["content"]
+                send(payload)
+                LOG.info("Resent verified RSI cards: date=%s candidates=%s", cached["asof"], len(cached["stocks"]))
+            else:
+                scan(latest=True)
         elif mode == "scan":
             scan()
         else:
