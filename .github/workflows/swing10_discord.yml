@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 30
 
     env:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_SWING_WEBHOOK_URL }}
 
     steps:
       - uses: actions/checkout@v4
