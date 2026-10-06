@@ -147,7 +147,7 @@ def scan(latest=False, dry_run=False, notify=True, slot="daily"):
     base.save(REPORT, report)
     if notify:
         events = base.load(EVENTS, {})
-        key = f"{current.date()}:{slot}:{asof}:cards-v1"
+        key = f"{current.date()}:{slot}:{asof}:cards-v2-strategy"
         if dry_run or events.get("last_list") != key:
             message = daily_payload(report, slot)
             send(message, dry_run)
@@ -156,6 +156,17 @@ def scan(latest=False, dry_run=False, notify=True, slot="daily"):
                 base.save(EVENTS, events)
     LOG.info("RSI shortlist: date=%s candidates=%s coverage=%.1f%% counts=%s", asof, len(report["stocks"]), coverage*100, counts)
     return report
+
+
+def premarket_strategy(stock):
+    p, r, s = (stock[k] for k in ("pivot", "resistance", "support"))
+    return (
+        f"回測做多：回測交界{p:.2f}後，完成5分K重新站上，且RSI≥60、量比≥1.5，再觀察。\n"
+        f"突破做多：完成5分K收上壓力{r:.2f}，回測守住再觀察；開在壓力上方先等回測，不追第一根。\n"
+        f"停損條件：回測單跌破回測低點；突破單跌回{r:.2f}下方。跌破交界{p:.2f}暫停做多；跌破支撐{s:.2f}排除。\n"
+        f"停利參考：回測單接近{r:.2f}分批；突破單用完成5分K低點移動保護。\n"
+        "進場前確認即時行情與可成交價；報酬空間不足停損距離2倍則略過。"
+    )
 
 
 def daily_payload(report, slot):
@@ -173,6 +184,7 @@ def daily_payload(report, slot):
                 {"name": "🔴 壓力", "value": f"**{stock['resistance']:.2f}**", "inline": True},
                 {"name": "🟡 交界", "value": f"**{stock['pivot']:.2f}**", "inline": True},
                 {"name": "🟢 支撐", "value": f"**{stock['support']:.2f}**", "inline": True},
+                {"name": "📋 盤前策略｜條件成立才觀察", "value": premarket_strategy(stock), "inline": False},
             ],
             "footer": {"text": "日線CDP價位｜候選排序不是漲停機率｜非買進指令"},
         })
@@ -183,6 +195,12 @@ def daily_payload(report, slot):
                "監看9:00～13:30完成5分K；RSI≥60且量比≥1.5倍，每根符合都提醒，持續強勢也通知。行情與排程可能延遲，不保證漲停。")
     if not cards:
         content += "\n本次沒有符合股票，不湊滿10檔。"
+    # Discord permits at most 6000 embed characters across one message.
+    embed_chars = sum(len(c["title"]) + len(c["description"]) + len(c["footer"]["text"])
+                      + sum(len(f["name"]) + len(f["value"]) for f in c["fields"])
+                      for c in cards)
+    if embed_chars > 6000:
+        raise ValueError("Daily cards exceed Discord embed character limit")
     return {"content": content, "embeds": cards}
 
 
