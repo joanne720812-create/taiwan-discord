@@ -24,6 +24,11 @@ MAX_AGE_MINUTES = 30
 def send(payload, dry_run=False):
     if isinstance(payload, str):
         payload = {"content": payload}
+    if len(payload.get("embeds", [])) > 5:
+        cards = payload["embeds"]
+        for offset in range(0, len(cards), 5):
+            send(dict(payload, embeds=cards[offset:offset+5], content=payload.get("content", "") if offset == 0 else "📋 RSI圖卡（續）"), dry_run)
+        return
     payload["allowed_mentions"] = {"parse": []}
     if len(payload.get("content", "")) > 2000:
         raise ValueError("Notification too long")
@@ -53,6 +58,11 @@ def send(payload, dry_run=False):
                 return
             except urllib.error.HTTPError as error:
                 if error.code != 429 or attempt == 2:
+                    try:
+                        details = json.load(error)
+                        LOG.error("Discord HTTP %s payload errors: %s", error.code, details.get("errors", {}))
+                    except (ValueError, TypeError):
+                        LOG.error("Discord HTTP %s", error.code)
                     raise
                 try:
                     pause = float(json.load(error).get("retry_after", 2))
