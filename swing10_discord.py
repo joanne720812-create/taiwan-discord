@@ -105,16 +105,15 @@ def send_discord(content):
             "請在 GitHub Secrets 設定 DISCORD_WEBHOOK_URL"
         )
 
-    if len(content) > 1900:
+    if isinstance(content, str) and len(content) > 1900:
         for start in range(0, len(content), 1900):
             send_discord(content[start:start + 1900])
         return
 
+    payload = {"content": content} if isinstance(content, str) else dict(content)
+    payload["allowed_mentions"] = {"parse": []}
     body = json.dumps(
-        {
-            "content": content,
-            "allowed_mentions": {"parse": []},
-        },
+        payload,
         ensure_ascii=False,
     ).encode("utf-8")
 
@@ -134,7 +133,12 @@ def send_discord(content):
             with urllib.request.urlopen(
                 request, timeout=20
             ) as response:
-                response.read()
+                accepted = json.load(response)
+
+            if str(accepted.get("channel_id")) != "1556975918822592562":
+                raise RuntimeError("Discord 發訊頻道未確認")
+            if len(accepted.get("embeds", [])) != len(payload.get("embeds", [])):
+                raise RuntimeError("Discord 圖卡數量未確認")
 
             return
 
@@ -416,6 +420,63 @@ def observation_score(df, stock):
             'pattern': '等待突破或回測確認' if price > ma20 > ma60 and ma20 > prior20 else '趨勢或買點尚未確認'}
 
 
+def daily_levels(df, asof):
+    high, low, close = (float(df[key].iloc[-1]) for key in ("High", "Low", "Close"))
+    if not all(math.isfinite(x) and x > 0 for x in (high, low, close)) or not low <= close <= high:
+        raise ValueError("CDP 基準資料不完整")
+    pivot = (high + low + 2 * close) / 4
+    return {"resistance": 2 * pivot - low, "pivot": pivot, "support": 2 * pivot - high,
+            "high": high, "low": low, "ma20": float(df.Close.tail(20).mean()),
+            "swing_support": float(df.Low.tail(20).min()), "levels_asof": str(asof)}
+
+
+def card_payloads(report):
+    cards = []
+    for rank, stock in enumerate(report["stocks"], 1):
+        confirmed = stock["status"] == "confirmed"
+        r, p, s = (stock[key] for key in ("resistance", "pivot", "support"))
+        trigger = stock["trigger"]
+        buy = (f"已符合收盤買點：{stock['pattern']}。隔日先看能否守住觸發線 {trigger:.2f}；"
+               f"回測後完成5分K收回交界 {p:.2f} 上方，才續列進場觀察。"
+               if confirmed else
+               f"目前等待買點，不能只因排名買進。先觀察前20日高點 {trigger:.2f}；"
+               "需後續日K確認放量突破，或回測20日線後轉強，並重新通過波段條件。")
+        stop = (f"波段停損參考 {stock['stop']:.2f}；距本次收盤 {stock['risk_pct']:.2f}%。"
+                "實際成交價改變時須重算風險，跳空可能超過預定停損。"
+                if confirmed else "尚無有效買點與波段停損，不提供買進委託價。")
+        sell = (f"持有者：接近壓力 {r:.2f} 但未站穩，評估分批減碼；"
+                if r > stock["close"] else
+                f"持有者：收盤已達或高於CDP壓力 {r:.2f}，此價只作守穩觀察，不當上漲目標；")
+        sell += (f"完成5分K跌回交界 {p:.2f} 先降風險，跌破支撐 {s:.2f} 重新評估。"
+                 "日線趨勢與原停損仍須一起判讀，觸價不代表必須交易。")
+        cards.append({
+            "title": f"{rank:02d}｜{stock['code']} {stock['name']}",
+            "color": 0xFF253A if confirmed else 0xF1C40F,
+            "description": (f"**{'✅ 已符合買點' if confirmed else '👀 等待買點'}｜{stock['pattern']}**\n"
+                            f"收盤 **{stock['close']:.2f}**｜量比 **{stock['volume_ratio']:.2f}**\n"
+                            f"{'買點' if confirmed else '觀察'}分數 {stock['score']}｜資料日 {report['asof']}"),
+            "fields": [
+                {"name": "🔴 壓力 NH", "value": f"**{r:.2f}**", "inline": True},
+                {"name": "🟡 交界 CDP", "value": f"**{p:.2f}**", "inline": True},
+                {"name": "🟢 支撐 NL", "value": f"**{s:.2f}**", "inline": True},
+                {"name": "📋 盤前準備／開盤", "value": "核對公司公告、注意／處置狀態及即時報價；先寫下可承受損失。09:00～09:15先觀察完成5分K；大幅跳空先重新計算，不直接追價。"},
+                {"name": "🔴 買進觀察劇本", "value": buy},
+                {"name": "🟢 賣出／減碼劇本（持有者）", "value": sell},
+                {"name": "🛑 失效與停損", "value": stop},
+                {"name": "📈 波段結構", "value": f"20日線 {stock['ma20']:.2f}｜近20日低點 {stock['swing_support']:.2f}\n資料日高 {stock['high']:.2f}／低 {stock['low']:.2f}｜{'買點觸發線' if confirmed else '前20日高點'} {trigger:.2f}"},
+            ],
+            "footer": {"text": "CDP由資料日高低收計算，供下一交易日觀察；條件式劇本，非即時訊號／自動下單。價格未按交易升降單位取整。"},
+        })
+    count = sum(stock["status"] == "confirmed" for stock in report["stocks"])
+    header = (f"📈 **波段買點｜盤前策略圖卡 {len(cards)}檔**\n資料日 {report['asof']}｜供下一交易日準備\n"
+              f"✅ 已符合買點 {count}檔｜👀 等待買點 {len(cards)-count}檔\n"
+              "🔴 壓力｜🟡 交界｜🟢 支撐；買點分數和觀察分數用途不同。\n"
+              f"上市＋上櫃｜歷史資料可用率 {report['coverage']:.0%}；分數不是獲利機率。")
+    groups = [cards[i:i+3] for i in range(0, len(cards), 3)] or [[]]
+    return [{"content": header + f"\n圖卡分組 {n}/{len(groups)}", "embeds": group}
+            for n, group in enumerate(groups, 1)]
+
+
 def select_top(results, observations):
     key = lambda item: (-item['score'], -item['value'], item['ticker'])
     top, seen = [], set()
@@ -539,10 +600,12 @@ def scan(asof, dry_run=False):
                 failures += 1
                 excluded['價格或成交量資料無效'] += 1
                 continue
+            observation.update(daily_levels(df, asof))
             observations.append(observation)
             item, reason = daily_score(df, stock)
 
             if item:
+                item.update(daily_levels(df, asof))
                 results.append(item)
             else:
                 excluded[reason] += 1
@@ -641,10 +704,12 @@ def scan(asof, dry_run=False):
     message = "\n\n".join(lines)
 
     if dry_run:
-        log(message)
+        for payload in card_payloads(report):
+            log(json.dumps(payload, ensure_ascii=False))
     else:
-        send_discord(message)
-        log(f"Discord 已發送：{len(top)}檔候選")
+        for payload in card_payloads(report):
+            send_discord(payload)
+        log(f"Discord 已確認圖卡：{len(top)}檔；含CDP撐壓與盤前買賣策略")
 
 
 def main():
