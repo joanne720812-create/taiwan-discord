@@ -22,6 +22,7 @@ GROUPS = (
     ('rsi', 'RSI強勢觀察', 'rsi10_candidates.json', 'stocks', 'long'),
     ('swing', '📈 波段買點（首日觀察）', 'swing_shortlist.json', 'stocks', 'long'),
     ('fib', '📐 斐波起漲股', 'fibonacci10.json', 'stocks', 'long'),
+    ('2455', '全新2455做空專案', 'stock2455.json', None, 'short'),
     ('3374', '精材3374專案', 'stock3374.json', None, 'observation'),
 )
 
@@ -133,8 +134,8 @@ def parsed_events(docs, day):
     events = {}
     notices = {}
     for origin, name, obj in sorted(docs):
-        if name in ('events_5m.json', 'stock3374_events.json'):
-            entries = obj.get('events', {}) if name.startswith('stock3374') else obj
+        if name in ('events_5m.json', 'stock3374_events.json', 'stock2455_events.json'):
+            entries = obj.get('events', {}) if name.startswith('stock') else obj
             for key, hit in entries.items():
                 m = re.fullmatch(r'(\d{4}-\d{2}-\d{2}):([^:]+):(long|short):(.+)', key)
                 if m and m[1] == day and isinstance(hit, dict):
@@ -142,7 +143,7 @@ def parsed_events(docs, day):
                         end = datetime.fromisoformat(hit.get('bar_at', m[4])) + timedelta(minutes=5)
                     except (ValueError, TypeError):
                         continue
-                    group = '精材5分K' if name.startswith('stock3374') else '多空5分K'
+                    group = {'stock3374_events.json': '精材5分K', 'stock2455_events.json': '全新做空5分K'}.get(name, '多空5分K')
                     events[(group, key)] = dict(group=group, ticker=m[2], direction=m[3],
                                                end=end.isoformat(), price=hit.get('price'),
                                                stop=hit.get('stop'), age=hit.get('age_minutes'))
