@@ -41,7 +41,7 @@ jobs:
             const fs = require('fs');
             const {owner, repo} = context.repo;
             fs.mkdirSync('review_inputs', {recursive: true});
-            const names = ['long10-report', 'short5-state', 'rising5-state', 'rsi10-state', 'swing10-report', 'fibonacci10-state', 'stock3374-state', 'daily-review-state'];
+            const names = ['long10-report', 'short5-state', 'rising5-state', 'rsi10-state', 'swing10-report', 'fibonacci10-state', 'stock3374-state', 'stock2455-state', 'daily-review-state'];
             for (const name of names) {
               const response = await github.rest.actions.listArtifactsForRepo({owner, repo, name, per_page: 100});
               const archives = response.data.artifacts.filter(a => !a.expired).sort((a,b) => b.id-a.id).slice(0, name === 'daily-review-state' ? 1 : 30);
