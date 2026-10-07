@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -343,6 +344,8 @@ def main():
             monitor()
     except Exception as error:
         LOG.error("RSI task failed: %s", type(error).__name__)
+        for frame in traceback.extract_tb(error.__traceback__):
+            LOG.error("Failure location: %s:%s in %s", os.path.basename(frame.filename), frame.lineno, frame.name)
         if isinstance(error, RuntimeError):
             LOG.error("%s", error)
         if mode != "preview":
