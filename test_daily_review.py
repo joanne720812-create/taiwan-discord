@@ -40,6 +40,11 @@ class ReviewTests(unittest.TestCase):
         self.assertNotIn('direction_pct', row)
         self.assertIn('不一致', row['status'])
 
+    def test_rising_and_rsi_use_official_close_from_saved_candidates(self):
+        stock = {k:v for k,v in self.stock.items() if k != 'close'}
+        stock['official_close'] = 100
+        self.assertAlmostEqual(bot.candidate_row(stock, self.quote, 'long')['direction_pct'], 3)
+
     def test_missing_and_invalid_quotes_are_not_zero_returns(self):
         self.assertNotIn('direction_pct', bot.candidate_row(self.stock, None, 'long'))
         self.assertEqual(bot.candidate_row(self.stock, {**self.quote, 'high': 99}, 'long')['status'], '行情無效')
