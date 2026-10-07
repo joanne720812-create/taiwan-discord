@@ -147,6 +147,12 @@ def parsed_events(docs, day):
                     events[(group, key)] = dict(group=group, ticker=m[2], direction=m[3],
                                                end=end.isoformat(), price=hit.get('price'),
                                                stop=hit.get('stop'), age=hit.get('age_minutes'))
+            if name == 'stock2455_events.json':
+                for key, hit in obj.get('crossings', {}).items():
+                    if isinstance(hit, dict) and str(hit.get('bar_at', '')).startswith(day):
+                        notices['2455:' + key] = dict(ticker='2455.TW',
+                            kind='觸价' if key.startswith('touch:') else '收盤穿越',
+                            price=finite(hit.get('price')), bar_at=hit['bar_at'], levels=hit.get('crossed', []))
         elif name in ('rising5_events.json', 'rsi10_events.json') and obj.get('date') == day:
             group = '起漲5分K' if name.startswith('rising') else 'RSI5分K'
             for key in obj.get('sent', []):
@@ -234,7 +240,7 @@ def payloads(report):
         for start in range(0, len(embeds), 5):
             output.append(dict(content=f"**{group['label']}｜候選復盤表｜{day}**", embeds=embeds[start:start+5],
                                allowed_mentions={'parse': []}))
-    for category in ('多空5分K', '起漲5分K', 'RSI5分K', '精材5分K'):
+    for category in ('多空5分K', '起漲5分K', 'RSI5分K', '精材5分K', '全新做空5分K'):
         rows = [r for r in report['signals'] if r['group'] == category]
         embeds = []
         for row in rows:
