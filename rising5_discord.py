@@ -33,6 +33,28 @@ def level_text(stock):
             f'🟢 支撐(NL){stock["support"]:.2f}（基準{stock["levels_date"]}）')
 
 
+def premarket_fields(stock):
+    r, p, s = (stock[key] for key in ("resistance", "pivot", "support"))
+    return [
+        dict(name="🔴 盤前做多策略", value=(
+            f"回測：完成5分K重新站上交界{p:.2f}，且站上當日VWAP、量比≥1.5，再觀察。\n"
+            f"突破：收上壓力{r:.2f}後回測守住；跳空開高先等回測。\n"
+            f"停損：跌破回測低點；突破單跌回{r:.2f}下方。跌破交界暫停做多。\n"
+            f"停利：回測單接近{r:.2f}分批；突破單用完成5分K低點移動保護。"
+        ), inline=False),
+        dict(name="🟢 盤前做空策略｜轉弱才觀察", value=(
+            f"反彈受阻：測試壓力{r:.2f}未站穩，再收破交界{p:.2f}且低於當日VWAP，才觀察。\n"
+            f"跌破：收破支撐{s:.2f}後反彈無法站回再觀察；跳空低開不追空。\n"
+            f"停損：站回測壓高點；跌破單重新站回{s:.2f}上方。\n"
+            f"停利：交界、支撐分批回補；續跌用完成5分K高點移動保護。"
+        ), inline=False),
+        dict(name="📌 執行前確認", value=(
+            "這是起漲候選的多空應變計畫，做空需另等轉弱，並確認券商可空資格與額度。"
+            "完成5分K收盤才判斷，核對即時行情；預期空間不足停損距離2倍則略過。"
+        ), inline=False),
+    ]
+
+
 def card_payload(title, stocks, kind, note=""):
     if not 1 <= len(stocks) <= 10:
         raise ValueError("每則卡片通知需包含1至10檔股票")
@@ -47,6 +69,8 @@ def card_payload(title, stocks, kind, note=""):
                            f'季線 {stock["ma60"]:.2f}｜量比 {stock["volume_ratio"]:.2f} 倍｜RSI {stock["rsi5"]:.1f}')
         fields = [dict(name=label, value=f'**{stock[key]:.2f}**', inline=True)
                   for label, key in [("🔴 壓力 NH", "resistance"), ("🟡 交界 CDP", "pivot"), ("🟢 支撐 NL", "support")]]
+        if kind == "daily":
+            fields.extend(premarket_fields(stock))
         embeds.append(dict(title=f'#{rank}｜{stock["code"]} {stock["name"]}',
                            color=0xE74C3C, description=description, fields=fields,
                            footer=dict(text=f'撐壓基準 {stock["levels_date"]}｜CDP計算參考，非下單指令')))
@@ -60,6 +84,10 @@ def card_payload(title, stocks, kind, note=""):
 
 
 def send_cards(title, stocks, kind, note=""):
+    if len(stocks) > 5:
+        for offset in range(0, len(stocks), 5):
+            send_cards(title + f"｜第{offset // 5 + 1}批", stocks[offset:offset + 5], kind, note)
+        return
     payload = card_payload(title, stocks, kind, note)
     hook = os.getenv("DISCORD_WEBHOOK_URL", "")
     parsed = urllib.parse.urlparse(hook)
