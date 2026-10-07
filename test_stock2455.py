@@ -56,11 +56,19 @@ class Short2455Tests(unittest.TestCase):
         hit = task.strategy(self.frame, self.stock, self.now)
         docs = [('0001-stock2455-state.zip', 'stock2455.json', self.stock),
                 ('0001-stock2455-state.zip', 'stock2455_events.json',
-                 {'events': {f'2026-10-08:2455.TW:short:{hit["bar_at"]}': hit}})]
+                 {'events': {f'2026-10-08:2455.TW:short:{hit["bar_at"]}': hit},
+                  'crossings': {'touch:example': {**hit, 'crossed': []}}})]
         candidate = review.select_candidates(docs, '2026-10-07')['2455']
         self.assertEqual(candidate['direction'], 'short')
-        events, _ = review.parsed_events(docs, '2026-10-08')
+        events, notices = review.parsed_events(docs, '2026-10-08')
         self.assertEqual(events[0]['group'], '全新做空5分K')
+        self.assertEqual(notices[0]['kind'], '觸价')
+        report = dict(day='2026-10-08', previous_day='2026-10-07', groups={},
+                      events=events, notices=notices,
+                      signals=review.signal_rows(events, {'2455':dict(name='全新', close=550)}, {}))
+        parts = review.payloads(report)
+        signal = next(p for p in parts if '全新做空5分K｜訊號復盤表' in p.get('content',''))
+        self.assertIn('2455', signal['embeds'][0]['title'])
 
 
 if __name__ == '__main__':
