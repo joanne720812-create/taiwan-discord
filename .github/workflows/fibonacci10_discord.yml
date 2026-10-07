@@ -1,0 +1,75 @@
+name: 斐波起漲股前10名每日推播
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: scan今日盤後／test最新完整交易日補送／dry-run僅驗證不推播
+        type: choice
+        default: scan
+        options: [scan, test, dry-run]
+  schedule:
+    - cron: '10 9 * * 1-5'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fibonacci10-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fibonacci10:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_RISING_WEBHOOK_URL }}
+      STATE_DIR: state_fibonacci10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 安裝行情套件
+        run: python -m pip install -r requirements_swing.txt
+      - name: 恢復斐波名單與推播去重紀錄
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const result = await github.rest.actions.listArtifactsForRepo({owner, repo, name: 'fibonacci10-state', per_page: 100});
+            const artifact = result.data.artifacts.filter(a => !a.expired).sort((a,b) => b.id - a.id)[0];
+            if (!artifact) return;
+            const archive = await github.rest.actions.downloadArtifact({owner, repo, artifact_id: artifact.id, archive_format: 'zip'});
+            require('fs').writeFileSync('fibonacci10-state.zip', Buffer.from(archive.data));
+      - name: 解開紀錄
+        run: |
+          mkdir -p state_fibonacci10
+          if [ -f fibonacci10-state.zip ]; then
+            unzip -o fibonacci10-state.zip -d state_fibonacci10
+          fi
+      - name: 斐波選股與圖卡推播
+        env:
+          MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'scan' }}
+        run: |
+          python -m py_compile fibonacci10_discord.py rising5_discord.py short_discord.py
+          python fibonacci10_discord.py "$MODE"
+      - name: 執行失敗通知
+        if: failure() && inputs.mode != 'dry-run'
+        run: |
+          python - <<'PY'
+          import fibonacci10_discord as fib
+          try:
+              fib.post(fib.webhook(), {"content": "⚠️ 斐波起漲股每日選股執行失敗，本次推播未確認完整。請查看GitHub執行紀錄；沒有通知不代表沒有訊號。", "embeds": []})
+          except Exception:
+              print("Failure notification could not be confirmed; inspect Actions")
+          PY
+      - name: 保存斐波名單與通知紀錄
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fibonacci10-state
+          path: state_fibonacci10/*.json
+          if-no-files-found: ignore
+          retention-days: 14
