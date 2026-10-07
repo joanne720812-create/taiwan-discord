@@ -179,7 +179,7 @@ def monitor(connection=False):
                         key = f"{kind}:{hit['bar_at']}:{item['name']}:{item['direction']}"
                         if key not in state["crossings"]:
                             send(s, {**hit, "crossed": [item]})
-                            state["crossings"][key] = True
+                            state["crossings"][key] = {**hit, "crossed": [item]}
                             base.save(EVENTS, state)
             for direction in ("short",):
                 stock = {**s, "direction": direction}
