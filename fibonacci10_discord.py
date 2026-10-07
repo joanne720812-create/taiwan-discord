@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -207,6 +208,8 @@ def main():
         scan(latest=args.mode != "scan", notify=args.mode != "dry-run")
     except Exception as error:
         LOG.error("Fibonacci scan failed (%s); see failed step. Secrets omitted.", type(error).__name__)
+        for frame in traceback.extract_tb(error.__traceback__):
+            LOG.error("Location: %s:%s in %s", os.path.basename(frame.filename), frame.lineno, frame.name)
         raise SystemExit(1) from None
 
 
