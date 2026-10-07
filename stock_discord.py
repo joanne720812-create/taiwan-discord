@@ -9,6 +9,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 TWSE = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'
@@ -222,6 +223,9 @@ def main():
     selected = sorted((s for s in current if s['score'] >= 60 and s['pct'] > 0),
                       key=lambda s: (s['score'], s['pct'], s['lots']), reverse=True)[:10]
     if not selected:
+        target = Path('state/long10_candidates.json')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({'asof': today, 'stocks': [], 'delivered': False}), encoding='utf-8')
         print('今天沒有達標股票。')
         return
     payload = message(selected, current[0]['date'])
@@ -236,6 +240,10 @@ def main():
             part['content'] = payload['content'] + f"\n卡片分組 {offset//5+1}/{(len(payload['embeds'])+4)//5}"
             send(webhook, part)
         print(f'已推播 {len(selected)} 檔；資料日 {current[0]["date"]}')
+        target = Path('state/long10_candidates.json')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({'asof': current[0]['date'], 'stocks': selected,
+                                     'delivered': True}, ensure_ascii=False), encoding='utf-8')
 
 
 if __name__ == '__main__':
