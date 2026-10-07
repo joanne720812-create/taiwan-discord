@@ -24,10 +24,26 @@ MAX_AGE_MINUTES = 30
 def send(payload, dry_run=False):
     if isinstance(payload, str):
         payload = {"content": payload}
-    if len(payload.get("embeds", [])) > 5:
-        cards = payload["embeds"]
-        for offset in range(0, len(cards), 5):
-            send(dict(payload, embeds=cards[offset:offset+5], content=payload.get("content", "") if offset == 0 else "📋 RSI圖卡（續）"), dry_run)
+    cards = payload.get("embeds", [])
+    groups, group, size = [], [], 0
+    for card in cards:
+        chars = (len(card.get("title", "")) + len(card.get("description", ""))
+                 + len(card.get("footer", {}).get("text", ""))
+                 + len(card.get("author", {}).get("name", ""))
+                 + sum(len(field.get("name", "")) + len(field.get("value", ""))
+                       for field in card.get("fields", [])))
+        if chars > 6000:
+            raise ValueError("One card exceeds Discord embed character limit")
+        if group and (len(group) >= 5 or size + chars > 6000):
+            groups.append(group)
+            group, size = [], 0
+        group.append(card)
+        size += chars
+    if group:
+        groups.append(group)
+    if len(groups) > 1:
+        for offset, batch in enumerate(groups):
+            send(dict(payload, embeds=batch, content=payload.get("content", "") if offset == 0 else "📋 RSI圖卡（續）"), dry_run)
         return
     payload["allowed_mentions"] = {"parse": []}
     if len(payload.get("content", "")) > 2000:
@@ -205,12 +221,6 @@ def daily_payload(report, slot):
                "監看9:00～13:30完成5分K；RSI≥60且量比≥1.5倍，每根符合都提醒，持續強勢也通知。行情與排程可能延遲，不保證漲停。")
     if not cards:
         content += "\n本次沒有符合股票，不湊滿10檔。"
-    # Discord permits at most 6000 embed characters across one message.
-    embed_chars = sum(len(c["title"]) + len(c["description"]) + len(c["footer"]["text"])
-                      + sum(len(f["name"]) + len(f["value"]) for f in c["fields"])
-                      for c in cards)
-    if embed_chars > 6000:
-        raise ValueError("Daily cards exceed Discord embed character limit")
     return {"content": content, "embeds": cards}
 
 
