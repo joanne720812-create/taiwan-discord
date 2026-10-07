@@ -1,11 +1,29 @@
 """Synthetic fixtures: no network, credentials, or Discord messages."""
 import unittest
+import io
+import json
+from unittest.mock import patch
 from datetime import datetime
 import pandas as pd
 import daily_review as bot
 
 
 class ReviewTests(unittest.TestCase):
+    def test_complete_json_is_read_despite_incorrect_content_length(self):
+        class LengthMismatch(io.BytesIO):
+            def read(self, size=-1):
+                if size == -1:
+                    raise bot.http.client.IncompleteRead(b'[]', 100)
+                return super().read(size)
+        with patch.object(bot.urllib.request, 'urlopen', return_value=LengthMismatch(b'[{"Code":"1234"}]')):
+            self.assertEqual(bot.otc_json(), [{'Code':'1234'}])
+
+    def test_truncated_json_is_never_used_as_quotes(self):
+        with patch.object(bot.urllib.request, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(b'[{"Code":"1234"')):
+            with patch.object(bot.time, 'sleep'):
+                with self.assertRaisesRegex(RuntimeError, '不完整'):
+                    bot.otc_json()
+
     def setUp(self):
         self.stock = dict(code='1234', name='合成', close=100, pivot=100, support=98, cdp_resistance=102)
         self.quote = dict(code='1234', name='合成', open=100, high=104, low=97, close=103, change=3)

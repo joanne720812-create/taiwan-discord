@@ -1,6 +1,7 @@
 """盤後候選／通知復盤。只使用當日官方行情及事前留存紀錄，不回填選股。"""
 import argparse
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -70,9 +71,33 @@ def select_candidates(docs, previous_day):
     return result
 
 
+def otc_json():
+    # 部分櫃買回應的Content-Length與實際JSON大小不同；逐塊讀至EOF，
+    # 仍須完整通過JSON解碼及交易日核對，截斷內容絕不作行情使用。
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(ranking.TPEX, headers={'User-Agent': 'Mozilla/5.0',
+                                          'Accept': 'application/json', 'Accept-Encoding': 'identity'})
+            with urllib.request.urlopen(req, timeout=35) as response:
+                chunks, size = [], 0
+                while chunk := response.read(65536):
+                    size += len(chunk)
+                    if size > 20_000_000:
+                        raise ValueError('官方行情回應過大')
+                    chunks.append(chunk)
+            result = json.loads(b''.join(chunks))
+            if not isinstance(result, list):
+                raise ValueError('官方上櫃行情格式錯誤')
+            return result
+        except (OSError, ValueError, http.client.IncompleteRead):
+            if attempt == 2:
+                raise RuntimeError('上櫃官方行情不完整，不發送錯誤復盤') from None
+            time.sleep(2 ** attempt)
+
+
 def quotes_for(day):
     listed = ranking.listed_for_date(day)
-    otc = [s for row in ranking.get_json(ranking.TPEX) if (s := ranking.normalized(row, '上櫃'))
+    otc = [s for row in otc_json() if (s := ranking.normalized(row, '上櫃'))
            and s['date'] == day]
     if not listed or not otc:
         raise RuntimeError('兩市場當日官方資料未齊，不發送舊日行情復盤')
