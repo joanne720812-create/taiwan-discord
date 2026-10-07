@@ -162,10 +162,14 @@ def scan(latest=False, notify=True):
             continue
         if not all(math.isfinite(float(v)) and float(v) > 0 for v in df[["Open", "High", "Low", "Close"]].iloc[-60:].to_numpy().ravel()):
             continue
+        try:
+            levels = rising.cdp_levels(float(df.High.iloc[-1]), float(df.Low.iloc[-1]), close, asof.isoformat())
+        except ValueError:
+            LOG.warning("Invalid daily high/low/close for %s; excluded", stock["code"])
+            continue
         valid += 1
         setup = fib_setup(df)
         if setup:
-            levels = rising.cdp_levels(float(df.High.iloc[-1]), float(df.Low.iloc[-1]), close, asof.isoformat())
             selected.append(dict(stock, **setup, **levels))
     if not universe or valid / len(universe) < 0.9:
         raise RuntimeError(f"Insufficient history coverage {valid}/{len(universe)}; no list sent")
