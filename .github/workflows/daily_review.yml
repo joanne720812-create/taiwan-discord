@@ -1,0 +1,78 @@
+name: 每日全策略盤後復盤
+
+on:
+  schedule:
+    - cron: '17 11 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      review_date:
+        description: 復盤交易日YYYY-MM-DD；留空使用台灣今天
+        type: string
+        default: ''
+      resend:
+        description: 重新推播已完成的復盤報表
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: daily-review-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements_swing.txt
+      - name: 復盤邏輯離線測試
+        run: python -m unittest test_daily_review.py -v
+      - name: 讀取各策略保留的實際候選與通知
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const {owner, repo} = context.repo;
+            fs.mkdirSync('review_inputs', {recursive: true});
+            const names = ['long10-report', 'short5-state', 'rising5-state', 'rsi10-state', 'swing10-report', 'fibonacci10-state', 'stock3374-state', 'daily-review-state'];
+            for (const name of names) {
+              const response = await github.rest.actions.listArtifactsForRepo({owner, repo, name, per_page: 100});
+              const archives = response.data.artifacts.filter(a => !a.expired).sort((a,b) => b.id-a.id).slice(0, name === 'daily-review-state' ? 1 : 30);
+              for (const a of archives) {
+                const zip = await github.rest.actions.downloadArtifact({owner, repo, artifact_id:a.id, archive_format:'zip'});
+                const filename = name === 'daily-review-state' ? 'review_previous.zip' : `review_inputs/${String(a.id).padStart(16,'0')}-${name}.zip`;
+                fs.writeFileSync(filename, Buffer.from(zip.data));
+              }
+              core.info(`${name}: ${archives.length}份留存紀錄`);
+            }
+      - name: 恢復推播完成紀錄
+        run: |
+          mkdir -p review_state
+          if [ -f review_previous.zip ]; then
+            unzip -o review_previous.zip -d review_state
+          fi
+      - name: 產生與推播全策略復盤表
+        env:
+          DISCORD_REVIEW_WEBHOOK_URL: ${{ secrets.DISCORD_REVIEW_WEBHOOK_URL }}
+          REVIEW_DATE: ${{ inputs.review_date }}
+          RESEND: ${{ inputs.resend }}
+        run: |
+          args=()
+          if [ -n "$REVIEW_DATE" ]; then args+=(--date "$REVIEW_DATE"); fi
+          if [ "$RESEND" = "true" ]; then args+=(--resend); fi
+          python daily_review.py "${args[@]}"
+      - name: 保存每日復盤報表及重送保護
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-review-state
+          path: review_state/*.json
+          if-no-files-found: ignore
+          retention-days: 30

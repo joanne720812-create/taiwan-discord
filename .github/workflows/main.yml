@@ -56,3 +56,11 @@ jobs:
           else
             python stock_discord.py
           fi
+      - name: 保存實際推播做多候選供隔日復盤
+        uses: actions/upload-artifact@v4
+        if: success() && !inputs.test_webhook
+        with:
+          name: long10-report
+          path: state/long10_candidates.json
+          if-no-files-found: ignore
+          retention-days: 14
