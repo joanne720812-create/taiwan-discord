@@ -117,5 +117,64 @@ class FollowupTests(unittest.TestCase):
         self.assertTrue(all(len(x['fields']) == 5 for x in sent))
 
 
+class EntrySignalTests(unittest.TestCase):
+    def setUp(self):
+        self.index = pd.date_range('2026-10-07 09:00', periods=6, freq='5min', tz=bot.TZ)
+        self.now = self.index[-1].to_pydatetime() + timedelta(minutes=5)
+        self.long_frame = pd.DataFrame([
+            [100, 100.5, 99.8, 100.1, 100],
+            [100.1, 100.4, 100, 100.2, 100],
+            [100.2, 100.4, 100, 100.1, 100],
+            [100.1, 100.4, 100, 100.2, 100],
+            [100.2, 100.4, 100, 100.3, 100],
+            [100.3, 101, 100.2, 100.8, 200],
+        ], columns=['Open', 'High', 'Low', 'Close', 'Volume'], index=self.index)
+        self.long_stock = {'close': 100, 'pivot': 100.5}
+        self.short_frame = pd.DataFrame([
+            [100.2, 100.4, 100, 100.2, 100],
+            [100.2, 100.4, 100, 100.2, 100],
+            [100.2, 100.4, 100, 100.2, 100],
+            [100.1, 100.5, 100, 100.1, 200],
+            [100, 100.1, 99.85, 99.9, 150],
+            [99.9, 100, 99.75, 99.8, 150],
+        ], columns=['Open', 'High', 'Low', 'Close', 'Volume'], index=self.index)
+        self.short_stock = {'close': 100.2, 'resistance': 100.5}
+
+    def test_fresh_long_and_short_signals_still_work(self):
+        self.assertIsNotNone(bot.long_signal(self.long_frame, self.long_stock, self.now))
+        self.assertIsNotNone(bot.short_signal(self.short_frame, self.short_stock, self.now))
+
+    def test_delay_boundary_and_historical_entry_block(self):
+        for signal, frame, stock in ((bot.long_signal, self.long_frame, self.long_stock),
+                                     (bot.short_signal, self.short_frame, self.short_stock)):
+            with self.subTest(signal=signal.__name__):
+                self.assertIsNotNone(signal(frame, stock, self.now + timedelta(minutes=5)))
+                for age in (5.01, 16, 20):
+                    self.assertIsNone(signal(frame, stock, self.now + timedelta(minutes=age)))
+
+    def test_long_must_be_above_cdp(self):
+        for pivot in (100.8, 101):
+            self.assertIsNone(bot.long_signal(self.long_frame, {**self.long_stock, 'pivot': pivot}, self.now))
+
+    def test_gap_does_not_create_entry(self):
+        self.assertIsNone(bot.long_signal(self.long_frame.drop(self.index[2]), self.long_stock, self.now))
+        self.assertIsNone(bot.short_signal(self.short_frame.drop(self.index[2]), self.short_stock, self.now))
+
+    def test_completed_touch_is_labeled_historical(self):
+        stock = {'code': '0000', 'name': '合成示範', 'score': 100,
+                 **bot.cdp_levels(101, 99, 100, '2026-10-06')}
+        signal = bot.touch_signal(self.long_frame, stock, self.now + timedelta(minutes=16))
+        self.assertIsNotNone(signal)
+        sent = []
+        original = bot.send_embeds
+        try:
+            bot.send_embeds = lambda title, cards: sent.append((title, cards))
+            bot.send_touch(stock, signal)
+        finally:
+            bot.send_embeds = original
+        self.assertIn('歷史觸價', sent[0][0])
+        self.assertIn('非目前即時報價', sent[0][1][0]['description'])
+
+
 if __name__ == '__main__':
     unittest.main()

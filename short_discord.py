@@ -25,8 +25,10 @@ MIN_SHARES = 2_000_000
 MIN_SCORE = 60
 TOP_N = 10
 
-# K棒收盤距今超過20分鐘，不發訊號
+# 歷史穿越與模擬追蹤的資料容忍上限，並非新進場容忍上限。
 MAX_BAR_AGE = 20
+# 歷史穿越／模擬追蹤可容忍延遲；新進場條件只採用收盤後5分鐘內的K棒。
+MAX_ENTRY_BAR_AGE = 5
 MAX_SIGNALS_PER_DAY = 5
 SIGNAL_COOLDOWN_MINUTES = 15
 FOLLOWUP_VERSION = 1
@@ -735,7 +737,7 @@ def short_signal(frame, stock, current):
 
     if (
         age < 0
-        or age > MAX_BAR_AGE
+        or age > MAX_ENTRY_BAR_AGE
         or (df["Volume"] <= 0).any()
     ):
         return None
@@ -876,7 +878,7 @@ def long_signal(frame, stock, current):
     if any((df.index[i] - df.index[i-1]).total_seconds() != 300 for i in range(1, len(df))):
         return None
     age = (current - (df.index[-1].to_pydatetime() + timedelta(minutes=5))).total_seconds() / 60
-    if not 0 <= age <= MAX_BAR_AGE or (df["Volume"] <= 0).any():
+    if not 0 <= age <= MAX_ENTRY_BAR_AGE or (df["Volume"] <= 0).any():
         return None
     if df.iloc[0]["Open"] >= stock["close"] * 1.03:
         return None
@@ -887,7 +889,7 @@ def long_signal(frame, stock, current):
     price = float(last["Close"])
     stop = float(df.iloc[-3:]["Low"].min())
     if not (previous["Close"] <= opening_high < price and price > last["Open"]
-            and price > vwap and price > stock["close"]
+            and price > vwap and price > stock["close"] and price > stock["pivot"]
             and last["Volume"] >= volume_base * 1.3
             and 0 < 1 - stop / price <= 0.015):
         return None
@@ -1074,8 +1076,10 @@ def send_touch(stock, signal, demo=False):
                    + f"\n本5分K區間 **{signal['low']:.2f}～{signal['high']:.2f}**"
                    + f"\n5分K起始：{stamp:%Y-%m-%d %H:%M}｜{status}\n"
                    + ("格式示範，不是真實觸價訊號。" if demo else
-                      f"K棒起始距今 {signal['age_minutes']:.1f} 分；收到觸價資料即推播，不等收盤。"))
-    send_embeds("🧪 到價卡片格式測試" if demo else "🔔 到價提醒｜不等5分K收盤",
+                      f"K棒起始距今 {signal['age_minutes']:.1f} 分；這是可見K棒曾觸價的紀錄，非目前即時報價或進場條件。"))
+    historical = signal.get("bar_complete", False) or signal["age_minutes"] > 5
+    send_embeds("🧪 到價卡片格式測試" if demo else
+                "🕒 歷史觸價紀錄｜非即時訊號" if historical else "🔔 可見K棒觸價｜未確認進場",
         [stock_card(stock,
                     ("🧪 示範｜" if demo else "") + ("🔴 " if direction == "up" else "🟢 ")
                     + "觸及" + signal["crossed"][0]["name"].split()[0] + f" {signal['crossed'][0]['level']:.2f}",
@@ -1087,7 +1091,7 @@ def send_strategy(stock, signal, current, notification_number):
     long = stock["direction"] == "long"
     target = start_followup(stock, signal)["target"]
     description = (f"觀察價 **{signal['price']:.2f}**｜5分K收盤 {end:%H:%M}\n"
-        + ("放量上穿開盤首根5分K高點，站上VWAP與前收。" if long else
+        + ("放量上穿開盤首根5分K高點，站上VWAP、前收與CDP交界。" if long else
            "測壓失敗，後2根量縮收跌，下穿測壓K低點並位於VWAP下方。")
         + f"\n本日通知 {notification_number}/{MAX_SIGNALS_PER_DAY}｜規則分數 {stock['score']}"
         + f"\n行情距今 {signal['age_minutes']:.1f}分｜推播 {current:%H:%M:%S}"
@@ -1231,13 +1235,13 @@ def send_monitor_cards(stocks, asof):
                          f"🔴 壓力 {item['cdp_resistance']:.2f}｜🟡 交界 {item['pivot']:.2f}｜🟢 支撐 {item['support']:.2f}")
         if not selected:
             lines.append('目前沒有符合條件的候選股票。')
-        lines.append('本表是實際監控候選，尚未代表進場條件成立。')
+        lines.append('本表是實際監控候選，尚未代表進場條件成立。新進場條件僅採用收盤後5分鐘內的K棒；行情延遲超過5分鐘時停止新進場通知。')
         send_discord('\n'.join(lines))
         LOG.info('%s監控文字名單已發送：%s檔；資料日%s', label, len(selected), asof)
         if selected:
             send_embeds(f"🔎 {'做多' if direction == 'long' else '做空'}5分K候選名單｜資料日 {asof}",
                 [stock_card(item, f"#{rank}", f"前收 **{item['close']:.2f}**｜規則分數 {item['score']}\n"
-                    "觸及壓力／交界／支撐就提醒，不等收盤；另保留原有策略條件。", direction)
+                    "可見K棒觸及壓力／交界／支撐會記錄；已收盤K棒標為歷史觸價，另依新鮮度與策略條件判斷進場。", direction)
                  for rank, item in enumerate(selected, 1)])
 
 
