@@ -108,7 +108,7 @@ class FollowupTests(unittest.TestCase):
         sent = []
         original = bot.send_embeds
         try:
-            bot.send_embeds = lambda title,cards: sent.extend(cards)
+            bot.send_embeds = lambda title,cards,direction=None: sent.extend(cards)
             bot.test_followup_cards()
         finally:
             bot.send_embeds = original
@@ -168,7 +168,7 @@ class EntrySignalTests(unittest.TestCase):
         sent = []
         original = bot.send_embeds
         try:
-            bot.send_embeds = lambda title, cards: sent.append((title, cards))
+            bot.send_embeds = lambda title, cards, direction=None: sent.append((title, cards))
             bot.send_touch(stock, signal)
         finally:
             bot.send_embeds = original
@@ -178,3 +178,4 @@ class EntrySignalTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
