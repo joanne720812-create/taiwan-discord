@@ -105,8 +105,17 @@ def get_json(url):
             time.sleep(2 ** attempt)
 
 
-def send_discord(content):
-    hook = os.getenv("DISCORD_WEBHOOK_URL", "")
+def send_discord(content, direction=None):
+    if os.getenv("DISCORD_SPLIT_INTRADAY") == "1":
+        if direction is None:
+            for side in ("long", "short"):
+                send_discord(content, side)
+            return
+        if direction not in ("long", "short"):
+            raise ValueError("推播方向需為long或short")
+        hook = os.getenv("DISCORD_INTRADAY_" + direction.upper() + "_WEBHOOK_URL", "")
+    else:
+        hook = os.getenv("DISCORD_WEBHOOK_URL", "")
     parsed = urllib.parse.urlparse(hook)
 
     valid = (
@@ -146,6 +155,10 @@ def send_discord(content):
                 req, timeout=20
             ) as resp:
                 message = json.load(resp)
+            if os.getenv("DISCORD_SPLIT_INTRADAY") == "1":
+                expected_channel = os.environ["DISCORD_INTRADAY_" + direction.upper() + "_CHANNEL_ID"]
+                if message.get("channel_id") != expected_channel:
+                    raise RuntimeError("Discord多空推播目的頻道不符")
             if isinstance(content, dict):
                 expected = len(content.get("embeds", []))
                 if len(message.get("embeds", [])) != expected:
@@ -1039,7 +1052,7 @@ def stock_card(stock, title, description, direction, extra=None, demo=False):
                 f"CDP基準 {stock['levels_date']}｜延遲行情，條件提醒")}}
 
 
-def send_embeds(title, embeds):
+def send_embeds(title, embeds, direction=None):
     if not 1 <= len(embeds) <= 10:
         raise ValueError("卡片數量需介於1到10")
     characters = sum(len(e.get("title", "")) + len(e.get("description", ""))
@@ -1047,7 +1060,21 @@ def send_embeds(title, embeds):
         + sum(len(f["name"]) + len(f["value"]) for f in e.get("fields", [])) for e in embeds)
     if characters > 6000 or len(title) > 2000:
         raise ValueError("Discord卡片文字過長")
-    send_discord({"content": title, "embeds": embeds})
+    # Discord message headings display prices larger than embed body text.
+    # Preserve the quote type: visible candle price is not a live broker quote.
+    headings = []
+    for embed in embeds:
+        match = re.search(
+            r"(目前可見成交價|本根收盤|觀察價|完成5分K收盤)\s+\*\*([0-9]+(?:\.[0-9]+)?)\*\*",
+            embed.get("description", ""),
+        )
+        if match:
+            symbol = embed.get("title", "").rsplit("｜", 1)[-1]
+            headings.append(f"# {symbol}｜{match.group(1)} {match.group(2)}")
+    content = title + ("\n" + "\n".join(headings) if headings else "")
+    if len(content) > 2000:
+        raise ValueError("Discord價格標題文字過長")
+    send_discord({"content": content, "embeds": embeds}, direction)
 
 
 def send_crossing(stock, signal, demo=False):
@@ -1063,7 +1090,7 @@ def send_crossing(stock, signal, demo=False):
                 [stock_card(stock,
                     ("🧪 示範｜" if demo else "") + ("🔴 收盤確認上穿" if direction == "up" else "🟢 收盤確認下穿")
                     + signal["crossed"][0]["name"].split()[0] + f" {signal['crossed'][0]['level']:.2f}",
-                    description, direction, extra=volume_fields(signal), demo=demo)])
+                    description, direction, extra=volume_fields(signal), demo=demo)], stock.get("direction"))
 
 
 def send_touch(stock, signal, demo=False):
@@ -1083,7 +1110,7 @@ def send_touch(stock, signal, demo=False):
         [stock_card(stock,
                     ("🧪 示範｜" if demo else "") + ("🔴 " if direction == "up" else "🟢 ")
                     + "觸及" + signal["crossed"][0]["name"].split()[0] + f" {signal['crossed'][0]['level']:.2f}",
-                    description, direction, volume_fields(signal), demo=demo)])
+                    description, direction, volume_fields(signal), demo=demo)], stock.get("direction"))
 
 
 def send_strategy(stock, signal, current, notification_number):
@@ -1105,7 +1132,7 @@ def send_strategy(stock, signal, current, notification_number):
               "inline": True}]
     send_embeds("📈 做多條件成立" if long else "📉 做空條件成立",
                 [stock_card(stock, "做多5分K" if long else "做空5分K", description,
-                            stock["direction"], extra + volume_fields(signal))])
+                            stock["direction"], extra + volume_fields(signal))], stock["direction"])
 
 
 def start_followup(stock, signal):
@@ -1222,7 +1249,7 @@ def test_followup_cards(direction="short"):
         card["description"] = "**合成示範，非真實股票、進場訊號或持倉。**\n"+card["description"]
         card["footer"] = {"text": "格式測試｜未建立模擬部位｜非真實交易"}
         cards.append(card)
-    send_embeds("✅ " + ("🔴 做多" if long else "🟢 做空") + "連續通知格式測試：每則附壓力、交界、支撐", cards)
+    send_embeds("✅ " + ("🔴 做多" if long else "🟢 做空") + "連續通知格式測試：每則附壓力、交界、支撐", cards, direction)
 
 
 def send_monitor_cards(stocks, asof):
@@ -1236,13 +1263,13 @@ def send_monitor_cards(stocks, asof):
         if not selected:
             lines.append('目前沒有符合條件的候選股票。')
         lines.append('本表是實際監控候選，尚未代表進場條件成立。新進場條件僅採用收盤後5分鐘內的K棒；行情延遲超過5分鐘時停止新進場通知。')
-        send_discord('\n'.join(lines))
+        send_discord('\n'.join(lines), direction)
         LOG.info('%s監控文字名單已發送：%s檔；資料日%s', label, len(selected), asof)
         if selected:
             send_embeds(f"🔎 {'做多' if direction == 'long' else '做空'}5分K候選名單｜資料日 {asof}",
                 [stock_card(item, f"#{rank}", f"前收 **{item['close']:.2f}**｜規則分數 {item['score']}\n"
                     "可見K棒觸及壓力／交界／支撐會記錄；已收盤K棒標為歷史觸價，另依新鮮度與策略條件判斷進場。", direction)
-                 for rank, item in enumerate(selected, 1)])
+                 for rank, item in enumerate(selected, 1)], direction)
 
 
 def test_cards():
@@ -1253,6 +1280,7 @@ def test_cards():
             "行情可能延遲、排程可能晚啟動。以下是示範數值，未產生真實訊號。"}])
     stock = {"code": "示範", "name": "格式測試", **cdp_levels(110, 90, 100, "示範")}
     for previous, price in ((99, 101), (101, 99)):
+        stock["direction"] = "long" if price > previous else "short"
         signal = {"previous": previous, "price": price, "age_minutes": 0,
                   "bar_at": now_tw().isoformat(), "volume_shares": 500000,
                   "volume_base_shares": 200000, "volume_ratio_5m": 2.5, "volume_base_count": 20, "crossed": [{"name": "🟡 交界 CDP", "level": 100,
@@ -1402,7 +1430,7 @@ def monitor(once=False):
                             # 先保存去重狀態；未知送達結果不重送、不假稱已成交。
                             save("positions_5m.json", positions)
                             for card in cards:
-                                send_embeds("🔔 5分K訊號連續追蹤（模擬部位）", [card])
+                                send_embeds("🔔 5分K訊號連續追蹤（模擬部位）", [card], stock["direction"])
 
                     key = (
                         f"{current.date()}:{event_stock['ticker']}:{signal['bar_at']}"
@@ -1527,3 +1555,4 @@ if __name__ == "__main__":
             "未輸出敏感錯誤內容。"
         )
         raise SystemExit(1)
+
