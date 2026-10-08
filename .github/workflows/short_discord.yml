@@ -61,28 +61,29 @@ jobs:
         env:
           MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '55 0 * * 1-5' && 'monitor' || 'scan') }}
           SCAN_DATE: ${{ inputs.scan_date }}
-          INTRADAY_WEBHOOK_URL: ${{ secrets.DISCORD_INTRADAY_WEBHOOK_URL }}
+          INTRADAY_LONG_WEBHOOK_URL: ${{ secrets.DISCORD_INTRADAY_LONG_WEBHOOK_URL }}
+          INTRADAY_SHORT_WEBHOOK_URL: ${{ secrets.DISCORD_INTRADAY_SHORT_WEBHOOK_URL }}
         run: |
           python -m py_compile short_discord.py stock_discord.py
           python -m unittest test_followup.py -v
           if [ "$MODE" != "scan" ]; then
-            if [ -z "$INTRADAY_WEBHOOK_URL" ]; then
-              echo "Missing intraday webhook; stopping to prevent sending to the wrong channel"
+            if [ -z "$INTRADAY_LONG_WEBHOOK_URL" ] || [ -z "$INTRADAY_SHORT_WEBHOOK_URL" ]; then
+              echo "Missing long/short webhook; stopping to prevent sending to the wrong channel"
               exit 1
             fi
-            export DISCORD_WEBHOOK_URL="$INTRADAY_WEBHOOK_URL"
+            export DISCORD_SPLIT_INTRADAY=1
+            export DISCORD_INTRADAY_LONG_WEBHOOK_URL="$INTRADAY_LONG_WEBHOOK_URL"
+            export DISCORD_INTRADAY_SHORT_WEBHOOK_URL="$INTRADAY_SHORT_WEBHOOK_URL"
+            export DISCORD_INTRADAY_LONG_CHANNEL_ID=1557765159970283611
+            export DISCORD_INTRADAY_SHORT_CHANNEL_ID=1557765846519250945
           fi
           if [ "$MODE" = "connection" ]; then
             python - <<'PY'
-          import json, os, urllib.request
-          payload = {"content": "✅ 盤中5分K頻道連線測試成功\n明日起，做多／做空觸價、收盤穿越與起漲5分K通知會送到此頻道。盤後名單保留在一般頻道。行情可能延遲，非下單指令。", "allowed_mentions": {"parse": []}}
-          url = os.environ["DISCORD_WEBHOOK_URL"] + "?wait=true"
-          req = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(), headers={"Content-Type": "application/json", "User-Agent": "TaiwanStockDiscord/1.0"}, method="POST")
-          with urllib.request.urlopen(req, timeout=30) as response:
-              accepted = json.load(response)
-          if accepted.get("channel_id") != "1556619339573231726":
-              raise RuntimeError("Unexpected destination channel")
-          print("Discord confirmed test message in intraday 5m channel")
+          import short_discord as bot
+          for direction, label in (("long", "🔴 做多"), ("short", "🟢 做空")):
+              bot.send_discord("✅ " + label + "盤中5分K分流連線成功\n此為連線測試，非交易訊號。", direction)
+              bot.test_followup_cards(direction)
+          print("Discord confirmed long/short destination channels and price headings")
           PY
             exit 0
           fi
@@ -115,3 +116,4 @@ jobs:
           path: state/*.json
           if-no-files-found: ignore
           retention-days: 14
+
