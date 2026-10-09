@@ -7,7 +7,7 @@ on:
         description: test驗證選股／scan盤後更新／monitor盤中監控／connection盤後連線／intraday_connection盤中連線
         type: choice
         default: test
-        options: [test, scan, monitor, connection, intraday_connection]
+        options: [test, scan, monitor, connection, intraday_connection, marketdata]
   schedule:
     - cron: '47 8 * * 1-5'
     - cron: '40 0 * * 1-5'
@@ -27,6 +27,8 @@ jobs:
     env:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       STATE_DIR: state_rising5
+      INTRADAY_DATA_SOURCE: fugle
+      RISING_MONITOR_SCOPE: top10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -55,9 +57,17 @@ jobs:
           MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '40 0 * * 1-5' && 'monitor' || 'scan') }}
           INTRADAY_WEBHOOK_URL: ${{ secrets.DISCORD_RISING_INTRADAY_WEBHOOK_URL }}
           RISING_WEBHOOK_URL: ${{ secrets.DISCORD_RISING_WEBHOOK_URL }}
+          FUGLE_API_KEY: ${{ secrets.FUGLE_MARKETDATA_API_KEY }}
         run: |
-          python -m py_compile rising5_discord.py short_discord.py
-          if [ "$MODE" = "monitor" ] || [ "$MODE" = "test" ] || [ "$MODE" = "intraday_connection" ]; then
+          python -m py_compile rising5_discord.py short_discord.py fugle_intraday.py
+          python -m unittest test_rising_fugle.py -v
+          if [ "$MODE" = "monitor" ] || [ "$MODE" = "marketdata" ]; then
+            if [ -z "$FUGLE_API_KEY" ]; then
+              echo "Missing Fugle marketdata key; no monitoring started"
+              exit 1
+            fi
+          fi
+          if [ "$MODE" = "monitor" ] || [ "$MODE" = "test" ] || [ "$MODE" = "intraday_connection" ] || [ "$MODE" = "marketdata" ]; then
             if [ -z "$INTRADAY_WEBHOOK_URL" ]; then
               echo "Missing intraday webhook"
               exit 1
@@ -81,7 +91,7 @@ jobs:
               metadata = json.load(response)
           if metadata.get("channel_id") != expected:
               raise RuntimeError("Unexpected webhook destination; no message sent")
-          content = ("✅ 起漲股盤中5分K專屬推播連線成功\n交易日盤中監控已完成的5分K，符合起漲條件才發送提醒；包含訊號價、量比、RSI與撐壓交界。行情可能延遲。\n這是連線測試，不是進場訊號。"
+          content = ("✅ 起漲股盤中5分K專屬推播連線成功\n交易日盤中監控已完成的5分K，符合起漲條件才發送提醒；包含訊號價、量比、RSI與撐壓交界。已改接富果，免費方案監控每日最多10檔候選，完成5分K才判斷；雲端檢查仍有時間差。\n這是連線測試，不是進場訊號。"
                      if intraday else "✅ 起漲股頻道連線測試成功\n盤後起漲股名單與盤前多空策略發送到這裡，起漲股盤中提醒發送到「起漲股-盤中5分k」。\n這是連線測試，不是進場訊號。")
           payload = {"content": content, "allowed_mentions": {"parse": []}}
           req = urllib.request.Request(url + "?wait=true", data=json.dumps(payload, ensure_ascii=False).encode(), headers=headers, method="POST")
@@ -102,3 +112,4 @@ jobs:
           path: state_rising5/*.json
           if-no-files-found: ignore
           retention-days: 14
+
