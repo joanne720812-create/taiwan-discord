@@ -62,6 +62,7 @@ jobs:
           MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '55 0 * * 1-5' && 'monitor' || 'scan') }}
           SCAN_DATE: ${{ inputs.scan_date }}
           FUGLE_API_KEY: ${{ secrets.FUGLE_API_KEY }}
+          INTRADAY_DATA_SOURCE: ${{ vars.INTRADAY_DATA_SOURCE }}
           INTRADAY_LONG_WEBHOOK_URL: ${{ secrets.DISCORD_INTRADAY_LONG_WEBHOOK_URL }}
           INTRADAY_SHORT_WEBHOOK_URL: ${{ secrets.DISCORD_INTRADAY_SHORT_WEBHOOK_URL }}
         run: |
@@ -101,11 +102,11 @@ jobs:
             exit 0
           fi
           if [ "$MODE" = "monitor" ]; then
-            if [ -z "$FUGLE_API_KEY" ]; then
+            if [ "$INTRADAY_DATA_SOURCE" = "fugle" ] && [ -z "$FUGLE_API_KEY" ]; then
               echo "Missing FUGLE_API_KEY; stopping before live monitoring"
               exit 1
             fi
-            export INTRADAY_DATA_SOURCE=fugle
+            export INTRADAY_DATA_SOURCE="${INTRADAY_DATA_SOURCE:-yahoo}"
           fi
           if [ "$MODE" = "connection" ]; then
             python - <<'PY'
