@@ -433,7 +433,8 @@ def marketdata_test():
                  stock["ticker"], session.date(), len(frame), len(history[stock["ticker"]]))
         time.sleep(1.1)
     hook = os.environ["DISCORD_WEBHOOK_URL"]
-    with urllib.request.urlopen(hook, timeout=20) as response:
+    request = urllib.request.Request(hook, headers={"User-Agent": "TaiwanStockDiscord/1.0"})
+    with urllib.request.urlopen(request, timeout=20) as response:
         metadata = json.load(response)
     if metadata.get("channel_id") != "1557347993672359986":
         raise RuntimeError("Unexpected rising intraday webhook channel")
