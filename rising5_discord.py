@@ -18,6 +18,66 @@ STATE_FILE = "rising5.json"
 EVENT_FILE = "rising5_events.json"
 
 
+def monitored_stocks(report):
+    if os.getenv("RISING_MONITOR_SCOPE") == "top10":
+        return report.get("top10", [])[:10]
+    return report["pool"]
+
+
+def historical_frames(stocks, current):
+    """Warm indicators once from previous sessions; live candles always use Fugle."""
+    import yfinance as yf
+    if not stocks:
+        return {}
+    data = yf.download(tickers=[s["ticker"] for s in stocks], period="5d", interval="5m",
+                       auto_adjust=False, actions=False, progress=False, threads=4,
+                       group_by="ticker", timeout=20)
+    frames = {}
+    for stock in stocks:
+        frame = base.frame_for(data, stock["ticker"])
+        if not frame.empty:
+            index = pd.DatetimeIndex(frame.index)
+            frame.index = index.tz_localize(base.TZ) if index.tz is None else index.tz_convert(base.TZ)
+            frame = frame[(frame.index.date < current.date()) &
+                          (frame.index.time >= clock(9)) & (frame.index.time < clock(13, 30))]
+        frames[stock["ticker"]] = frame
+        LOG.info("Indicator history %s: %s previous-session bars", stock["ticker"], len(frame))
+    return frames
+
+
+def merge_history(history, live, current):
+    if live.empty:
+        return live
+    previous = history.copy()
+    if not previous.empty:
+        index = pd.DatetimeIndex(previous.index)
+        previous.index = index.tz_localize(base.TZ) if index.tz is None else index.tz_convert(base.TZ)
+        previous = previous[previous.index.date < current.date()]
+    frame = pd.concat([previous, live])
+    frame = frame[~frame.index.duplicated(keep="last")].sort_index()
+    return frame[(frame.index.time >= clock(9)) & (frame.index.time < clock(13, 30))]
+
+
+def intraday_frames(stocks, history):
+    if os.getenv("INTRADAY_DATA_SOURCE") != "fugle":
+        yield from batches(stocks, "5m", "5d")
+        return
+    # Free account: at most ten requests per sweep, once per minute. Other
+    # long/short monitoring uses the same account, so never sweep the full pool.
+    if len(stocks) > 10:
+        raise RuntimeError("Free Fugle rising monitor requires at most ten candidates")
+    for stock in stocks:
+        current = base.now_tw()
+        try:
+            data = base.download([stock["ticker"]], "5m", "5d")
+            live = base.frame_for(data, stock["ticker"])
+            frame = merge_history(history.get(stock["ticker"], pd.DataFrame()), live, current)
+        except Exception:
+            LOG.warning("Fugle current-session candles unavailable: %s; no alert", stock["ticker"])
+            frame = pd.DataFrame()
+        yield stock, frame
+
+
 def cdp_levels(high, low, close, source_date):
     if not all(math.isfinite(v) and v > 0 for v in (high, low, close)) or not low <= close <= high:
         raise ValueError("前一交易日高低收不完整，不能計算撐壓")
@@ -213,7 +273,10 @@ def scan(latest=False, notify=True):
     if notify:
         title = "📋 起漲候選自動更新｜資料日 " + asof.isoformat()
         note = (f"上市＋上櫃，前日量≥2000張、金額≥1億元、股價≥10元；監控{len(pool)}檔有效行情。\n"
-                "日線預選：季線上方10%內、量比≥1.5、RSI50–70。盤中監控整個合格池，新股票符合也通知。\n延遲行情觀察；非保證上漲，不自動下單。")
+                "日線預選：季線上方10%內、量比≥1.5、RSI50–70。"
+                + ("盤中以富果監控每日最多10檔候選股。" if os.getenv("RISING_MONITOR_SCOPE") == "top10"
+                   else "盤中監控整個合格池，新股票符合也通知。")
+                + "\n條件觀察；非保證上漲，不自動下單。")
         if report["top10"]:
             send_cards(title, report["top10"], "daily", note)
         else:
@@ -252,11 +315,13 @@ def signal(df, stock, current, asof):
     return None
 
 
-def sweep(report, events):
+def sweep(report, events, history=None):
     current = base.now_tw()
     asof = datetime.fromisoformat(report["asof"]).date()
     found, valid = [], 0
-    for stock, df in batches(report["pool"], "5m", "5d"):
+    pending = set(events["sent"])
+    stocks = monitored_stocks(report)
+    for stock, df in intraday_frames(stocks, history or {}):
         if not df.empty:
             valid += 1
         # Recheck recent candles so a slow download sweep cannot skip a cross.
@@ -264,14 +329,18 @@ def sweep(report, events):
             hit = signal(df.iloc[:end_index], stock, base.now_tw(), asof)
             if hit:
                 key = f'{hit["ticker"]}:{hit["bar_end"]}'
-                if key not in events["sent"]:
+                if key not in pending:
                     found.append((key, hit))
+                    pending.add(key)
     found.sort(key=lambda p: (-p[1]["volume_ratio"], -p[1]["value"], p[1]["ticker"]))
     # Deliver every new match in groups of ten; never drop matches due to rank.
     for start in range(0, len(found), 10):
         group = found[start:start + 10]
         send_cards("🔔 新起漲條件符合｜5分K收盤確認", [s for _, s in group], "signal",
-                   "新突破前一交易日60日季線＋前20根5分K均量1.5倍＋RSI14<70。\n雲端自動換股監控；可能延遲，不是下單指令。")
+                   "新突破前一交易日60日季線＋前20根5分K均量1.5倍＋RSI14<70。\n"
+                   + ("富果5分K；每日最多10檔候選股，約每1–2分鐘檢查，完成K棒才判斷。"
+                      if os.getenv("INTRADAY_DATA_SOURCE") == "fugle" else "雲端自動換股監控；可能延遲。")
+                   + "不是下單指令。")
         for key, s in group:
             events["sent"].append(key)
             events["matched"][s["ticker"]] = s
@@ -286,9 +355,9 @@ def sweep(report, events):
                    "這是今日曾符合的訊號排行，不表示此刻仍符合；TradingView固定名單不會同步換股。")
         events["top_codes"] = codes
         base.save(EVENT_FILE, events)
-    LOG.info("5m sweep: valid=%s/%s, new signals=%s", valid, len(report["pool"]), len(found))
-    if valid < len(report["pool"]) * 0.9 and not events.get("warned"):
-        base.send_discord(f"⚠️ 起漲5分K行情不足：{valid}/{len(report['pool'])}檔；缺資料股票不發訊號。")
+    LOG.info("5m sweep: valid=%s/%s, new signals=%s", valid, len(stocks), len(found))
+    if valid < len(stocks) * 0.9 and not events.get("warned"):
+        base.send_discord(f"⚠️ 起漲5分K行情不足：{valid}/{len(stocks)}檔；缺資料股票不發訊號。")
         events["warned"] = True
         base.save(EVENT_FILE, events)
 
@@ -303,31 +372,88 @@ def monitor():
     if asof >= current.date():
         LOG.info("No previous-session baseline available")
         return
+    stocks = monitored_stocks(report)
+    if not stocks:
+        LOG.info("No daily rising candidates; no intraday alerts")
+        return
+    history = {}
+    if os.getenv("INTRADAY_DATA_SOURCE") == "fugle":
+        if os.getenv("RISING_MONITOR_SCOPE") != "top10" or not os.getenv("FUGLE_API_KEY"):
+            raise RuntimeError("Fugle requires top10 scope and configured API key")
+        try:
+            history = historical_frames(stocks, current)
+        except Exception:
+            LOG.warning("Previous-session indicator history unavailable; insufficient bars suppress alerts")
     day = current.date().isoformat()
     events = base.load(EVENT_FILE, {})
     if events.get("date") != day:
         events = dict(date=day, sent=[], matched={}, top_codes=[])
     if not events.get("started"):
-        base.send_discord(f"🟢 起漲5分K雲端監控啟動｜{day}\n前一交易日資料{asof}，流動性合格且歷史資料驗證通過{len(report['pool'])}檔；自動偵測新股票，符合才通知。")
+        scope = (f"每日候選{len(stocks)}檔；富果5分K，約每1–2分鐘檢查，其他股票不在盤中監控範圍。"
+                 if os.getenv("INTRADAY_DATA_SOURCE") == "fugle" else f"完整合格池{len(stocks)}檔。")
+        base.send_discord(f"🟢 起漲5分K雲端監控啟動｜{day}\n前一交易日資料{asof}，{scope}\n完成5分K符合條件才通知。")
         events["started"] = True
         base.save(EVENT_FILE, events)
     next_check = base.now_tw()
     while base.now_tw().time() < clock(13, 50):
         current = base.now_tw()
         if current.time() >= clock(9, 5) and current >= next_check:
-            next_check = current + timedelta(minutes=5)
-            sweep(report, events)
+            next_check = current + timedelta(seconds=60 if os.getenv("INTRADAY_DATA_SOURCE") == "fugle" else 300)
+            sweep(report, events, history)
         time.sleep(60)
+
+
+def marketdata_test():
+    """Validate ten-candidate scope, previous bars, API credentials and destination."""
+    from fugle_intraday import parse_candles
+    report = base.load(STATE_FILE, {})
+    stocks = monitored_stocks(report)
+    if not stocks or len(stocks) > 10 or os.getenv("INTRADAY_DATA_SOURCE") != "fugle":
+        raise RuntimeError("Missing Fugle daily candidate list")
+    current = base.now_tw()
+    history = historical_frames(stocks, current)
+    for stock in stocks:
+        if len(history.get(stock["ticker"], [])) < 21:
+            raise RuntimeError("Insufficient previous-session indicator history: " + stock["ticker"])
+        request = urllib.request.Request(
+            "https://api.fugle.tw/marketdata/v1.0/stock/intraday/candles/" + stock["code"] + "?timeframe=5&sort=asc",
+            headers={"X-API-KEY": os.environ["FUGLE_API_KEY"]})
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                payload = json.load(response)
+        except Exception:
+            raise RuntimeError("Fugle candidate API validation failed: " + stock["ticker"]) from None
+        # On holidays the API returns the previous session. Validate its schema,
+        # but never feed that stale date to production signal evaluation.
+        session = datetime.fromisoformat(payload["date"]).replace(hour=13, minute=35, tzinfo=base.TZ)
+        frame = parse_candles(payload, stock["ticker"], session)
+        if frame.empty or session.date() > current.date() or (current.date() - session.date()).days > 10:
+            raise RuntimeError("Fugle candidate candles missing or stale")
+        LOG.info("Fugle verified %s: session=%s, five-minute bars=%s, previous bars=%s",
+                 stock["ticker"], session.date(), len(frame), len(history[stock["ticker"]]))
+        time.sleep(1.1)
+    hook = os.environ["DISCORD_WEBHOOK_URL"]
+    with urllib.request.urlopen(hook, timeout=20) as response:
+        metadata = json.load(response)
+    if metadata.get("channel_id") != "1557347993672359986":
+        raise RuntimeError("Unexpected rising intraday webhook channel")
+    base.send_discord("✅ 起漲股盤中5分K已改接富果｜免費10檔候選監控\n"
+                      f"已驗證{len(stocks)}檔候選的富果5分K與前幾日指標資料。\n"
+                      "交易日盤中約每1–2分鐘檢查，完成5分K符合條件才推播；名單以外股票不監控。\n"
+                      "這是設定連線測試，不是買進訊號；休市不會產生當日訊號。")
+    LOG.info("Fugle rising setup verified: %s candidates; expected intraday channel", len(stocks))
 
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["test", "scan", "monitor"])
+    parser.add_argument("mode", choices=["test", "scan", "monitor", "marketdata"])
     args = parser.parse_args()
-    if args.mode == "test":
+    if args.mode == "marketdata":
+        marketdata_test()
+    elif args.mode == "test":
         report = scan(latest=True)
-        base.send_discord(f"✅ 自動換股＋5分K監控設定測試成功\n資料日{report['asof']}；有效監控池{len(report['pool'])}檔，日線候選{len(report['top10'])}檔。\n盤後自動更新，交易日盤中符合條件才推播。今天若休市，這是設定測試，沒有即時買進訊號。")
+        base.send_discord(f"✅ 自動換股＋5分K監控設定測試成功\n資料日{report['asof']}；合格池{len(report['pool'])}檔，實際盤中監控{len(monitored_stocks(report))}檔候選。\n盤後自動更新，交易日盤中符合條件才推播。今天若休市，這是設定測試，沒有即時買進訊號。")
     elif args.mode == "scan":
         scan()
     else:
@@ -336,3 +462,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
