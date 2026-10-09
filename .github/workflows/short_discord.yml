@@ -61,7 +61,7 @@ jobs:
         env:
           MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '55 0 * * 1-5' && 'monitor' || 'scan') }}
           SCAN_DATE: ${{ inputs.scan_date }}
-          FUGLE_API_KEY: ${{ secrets.FUGLE_API_KEY }}
+          FUGLE_API_KEY: ${{ secrets.FUGLE_MARKETDATA_API_KEY }}
           INTRADAY_DATA_SOURCE: ${{ vars.INTRADAY_DATA_SOURCE }}
           INTRADAY_LONG_WEBHOOK_URL: ${{ secrets.DISCORD_INTRADAY_LONG_WEBHOOK_URL }}
           INTRADAY_SHORT_WEBHOOK_URL: ${{ secrets.DISCORD_INTRADAY_SHORT_WEBHOOK_URL }}
