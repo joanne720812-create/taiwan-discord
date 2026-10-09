@@ -362,6 +362,10 @@ def official_snapshot(market, expected=None):
 
 
 def download(tickers, interval, period):
+    if interval == "5m" and os.getenv("INTRADAY_DATA_SOURCE") == "fugle":
+        from fugle_intraday import download as fugle_download
+        return fugle_download(tickers, now_tw())
+
     import yfinance as yf
 
     return yf.download(
@@ -1049,7 +1053,7 @@ def stock_card(stock, title, description, direction, extra=None, demo=False):
             "description": description, "color": 0xFF253A if direction in ("up", "long") else 0x00B875,
             "fields": level_fields(stock) + (extra or []),
             "footer": {"text": ("示範數值，非真實行情或交易訊號" if demo else
-                f"CDP基準 {stock['levels_date']}｜延遲行情，條件提醒")}}
+                f"CDP基準 {stock['levels_date']}｜" + ("富果5分K（每60秒檢查），條件提醒" if os.getenv("INTRADAY_DATA_SOURCE") == "fugle" else "延遲行情，條件提醒"))}}
 
 
 def send_embeds(title, embeds, direction=None):
@@ -1357,8 +1361,9 @@ def monitor(once=False):
     send_discord(
         f"🔎 做多＋做空5分K監控啟動｜{current:%Y-%m-%d %H:%M}\n"
         f"候選資料日：{asof}\n"
-        f"{names}\n"
-        "每60秒檢查5分鐘K（含未收盤），觸及價位就提醒，另發5分K收盤確認穿越；行情可能延遲。\n"
+        f"{names}\n" +
+        ("行情來源：富果；" if os.getenv("INTRADAY_DATA_SOURCE") == "fugle" else "行情來源：Yahoo延遲行情；") +
+        "每60秒檢查5分鐘K（含未收盤），另發5分K收盤確認穿越；排程與網路仍可能造成延遲。\n"
         "訊號是條件提醒，不是立即下單指令。"
     )
 
@@ -1555,4 +1560,5 @@ if __name__ == "__main__":
             "未輸出敏感錯誤內容。"
         )
         raise SystemExit(1)
+
 
