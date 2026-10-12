@@ -79,13 +79,23 @@ def otc_json():
         try:
             req = urllib.request.Request(ranking.TPEX, headers={'User-Agent': 'Mozilla/5.0',
                                           'Accept': 'application/json', 'Accept-Encoding': 'identity'})
-            with urllib.request.urlopen(req, timeout=35) as response:
+            with urllib.request.urlopen(req, timeout=90) as response:
                 chunks, size = [], 0
-                while chunk := response.read(65536):
+                while True:
+                    incomplete = False
+                    try:
+                        chunk = response.read(65536)
+                    except http.client.IncompleteRead as error:
+                        chunk = error.partial
+                        incomplete = True
+                    if not chunk:
+                        break
                     size += len(chunk)
                     if size > 20_000_000:
                         raise ValueError('官方行情回應過大')
                     chunks.append(chunk)
+                    if incomplete:
+                        break
             result = json.loads(b''.join(chunks))
             if not isinstance(result, list):
                 raise ValueError('官方上櫃行情格式錯誤')
