@@ -37,6 +37,21 @@ class ReviewTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, '不完整'):
                             bot.otc_json()
 
+    def test_notice_cards_show_name_level_direction_and_correct_time(self):
+        notices = [dict(ticker='1234.TW', name='合成公司', kind='觸价', price=100,
+                        bar_at='2026-10-12T09:25:00+08:00', levels=[dict(name='🟡 交界 CDP', level=100, direction='up')]),
+                   dict(ticker='1234.TW', name='合成公司', kind='收盤穿越', price=101,
+                        bar_at='2026-10-12T09:25:00+08:00', levels=[dict(name='🟡 交界 CDP', level=100, direction='up')])]
+        report = dict(day='2026-10-12', previous_day='2026-10-08', groups={}, events=[], signals=[], notices=notices)
+        card = bot.payloads(report)[-1]['embeds'][0]
+        self.assertIn('1234 合成公司', card['title'])
+        self.assertIn('09:25 K棒起始', card['description'])
+        self.assertIn('09:30 收盤', card['description'])
+        self.assertIn('收盤上穿 🟡 交界 CDP 100.00', card['description'])
+        self.assertIn('該根收盤價 101.00', card['description'])
+        self.assertIn('盤後歷史', card['description'])
+        self.assertNotIn('做多進場', card['description'])
+
     def setUp(self):
         self.stock = dict(code='1234', name='合成', close=100, pivot=100, support=98, cdp_resistance=102)
         self.quote = dict(code='1234', name='合成', open=100, high=104, low=97, close=103, change=3)
