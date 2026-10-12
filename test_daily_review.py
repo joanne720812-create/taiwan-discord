@@ -24,6 +24,19 @@ class ReviewTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, '不完整'):
                     bot.otc_json()
 
+    def test_final_partial_chunk_requires_complete_json(self):
+        class FinalPartial(io.BytesIO):
+            def read(self, size=-1):
+                raise bot.http.client.IncompleteRead(super().read(size), 100)
+        for content, valid in [(b'[{"Code":"1234"}]', True), (b'[{"Code":"1234"', False)]:
+            with patch.object(bot.urllib.request, 'urlopen', side_effect=lambda *a, **k: FinalPartial(content)):
+                with patch.object(bot.time, 'sleep'):
+                    if valid:
+                        self.assertEqual(bot.otc_json(), [{'Code': '1234'}])
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, '不完整'):
+                            bot.otc_json()
+
     def setUp(self):
         self.stock = dict(code='1234', name='合成', close=100, pivot=100, support=98, cdp_resistance=102)
         self.quote = dict(code='1234', name='合成', open=100, high=104, low=97, close=103, change=3)
