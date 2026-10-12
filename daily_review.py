@@ -162,7 +162,8 @@ def parsed_events(docs, day):
                     if isinstance(hit, dict) and str(hit.get('bar_at', '')).startswith(day):
                         notices['2455:' + key] = dict(ticker='2455.TW',
                             kind='觸价' if key.startswith('touch:') else '收盤穿越',
-                            price=finite(hit.get('price')), bar_at=hit['bar_at'], levels=hit.get('crossed', []))
+                            price=finite(hit.get('price')), previous=finite(hit.get('previous')),
+                            bar_at=hit['bar_at'], levels=hit.get('crossed', []))
         elif name in ('rising5_events.json', 'rsi10_events.json') and obj.get('date') == day:
             group = '起漲5分K' if name.startswith('rising') else 'RSI5分K'
             for key in obj.get('sent', []):
@@ -183,8 +184,8 @@ def parsed_events(docs, day):
                     confirmed = key.startswith(day + ':confirmed:')
                     ticker = key.split(':')[2 if confirmed else 1]
                     notices[key] = dict(ticker=ticker, kind='收盤穿越' if confirmed else '觸价',
-                                        price=finite(hit.get('price')), bar_at=hit.get('bar_at', ''),
-                                        levels=hit.get('crossed', []))
+                                        price=finite(hit.get('price')), previous=finite(hit.get('previous')),
+                                        bar_at=hit.get('bar_at', ''), levels=hit.get('crossed', []))
     return list(events.values()), [v for v in notices.values() if isinstance(v, dict)]
 
 
@@ -272,13 +273,42 @@ def payloads(report):
         for start in range(0, len(embeds), 5):
             output.append(dict(content=f'**{category}｜訊號復盤表｜{day}**', embeds=embeds[start:start+5],
                                allowed_mentions={'parse': []}))
-    counts = {}
+    by_stock = {}
     for notice in notices:
-        counter = counts.setdefault(notice['ticker'], {'觸价': 0, '收盤穿越': 0})
-        counter[notice['kind']] += 1
-    notice_embeds = [dict(title=ticker.split('.')[0], color=0x999999,
-                         description=f"觸價{c['觸价']}次｜5分K收盤穿越{c['收盤穿越']}次\n價格通知紀錄，不是交易進場或成交。")
-                     for ticker, c in sorted(counts.items())]
+        by_stock.setdefault(notice['ticker'], []).append(notice)
+    notice_embeds = []
+    for ticker, records in sorted(by_stock.items()):
+        touches = sum(r['kind'] == '觸价' for r in records)
+        crosses = len(records) - touches
+        lines = [f"到價 {touches} 次｜5分K收盤穿越 {crosses} 次"]
+        latest = sorted(records, key=lambda r: (r.get('bar_at', ''), r['kind']))[-4:]
+        for record in latest:
+            confirmed = record['kind'] == '收盤穿越'
+            try:
+                stamp = datetime.fromisoformat(record['bar_at'])
+                if confirmed:
+                    stamp += timedelta(minutes=5)
+                when = f"{stamp:%H:%M} {'收盤' if confirmed else 'K棒起始'}"
+            except (ValueError, TypeError, KeyError):
+                when = '時間未留存'
+            price = finite(record.get('price'))
+            price_text = f"{price:.2f}" if price is not None else '未留存'
+            for level in record.get('levels', []) or [{}]:
+                if not isinstance(level, dict):
+                    continue
+                value = finite(level.get('level'))
+                level_text = f"{level.get('name', '價位未留存')}" + (f" {value:.2f}" if value is not None else '')
+                direction = level.get('direction')
+                action = ('收盤上穿' if direction == 'up' else '收盤下穿' if direction == 'down' else '收盤穿越') if confirmed else '觸及'
+                lines.append(f"• {when}｜**{action} {level_text}**\n  {'該根收盤價' if confirmed else '留存可見價'} {price_text}")
+        if len(records) > 4:
+            lines.append(f"以上為最近4筆；全日另有 {len(records)-4} 筆紀錄。")
+        lines += ['判讀：到價＝該K棒高低範圍碰到價位；收盤上穿／下穿＝相鄰兩根5分K收盤跨越價位。',
+                  '後續觀察：觸價後看5分K是否收在該價位上方或下方；穿越後看能否維持，或又穿回。',
+                  '這是盤後歷史紀錄；未確認進場、成交或目前即時價格。']
+        name = next((r.get('name') for r in records if r.get('name')), '股名未取得')
+        notice_embeds.append(dict(title=f"{ticker.split('.')[0]} {name}｜到價／穿越", color=0xF2B705,
+                                  description='\n'.join(lines)))
     if not notice_embeds:
         notice_embeds = [dict(title='到價與收盤穿越', description='沒有當日留存紀錄，未推定完整監控。', color=0x999999)]
     for start in range(0, len(notice_embeds), 5):
@@ -352,6 +382,9 @@ def main():
     for g in groups.values():
         g['rows'] = [candidate_row(s, quotes.get(s.get('code')), g['direction']) for s in g.pop('stocks')]
     events, notices = parsed_events(docs, args.date)
+    for notice in notices:
+        quote = quotes.get(notice['ticker'].split('.')[0], {})
+        notice['name'] = quote.get('name', '')
     tickers = sorted({e['ticker'] for e in events if e['price'] is None})
     bars = {}
     for start in range(0, len(tickers), 20):
