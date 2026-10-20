@@ -1,0 +1,47 @@
+name: 盤中三項異動偵測驗證
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      THREE_EVENT_ALERTS: '1'
+      INTRADAY_DATA_SOURCE: fugle
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements_swing.txt
+      - name: 驗證門檻與原有5分K策略
+        run: python -m unittest test_intraday_events.py test_followup.py test_fugle_intraday.py test_rising_fugle.py -v
+        env:
+          THREE_EVENT_ALERTS: '0'
+      - name: 驗證富果1分K與成交單量權限（不發交易訊號）
+        env:
+          FUGLE_API_KEY: ${{ secrets.FUGLE_MARKETDATA_API_KEY }}
+        run: |
+          python - <<'PY'
+          from datetime import timedelta
+          import fugle_intraday as fugle
+          import intraday_events as events
+          import short_discord as base
+          current = base.now_tw()
+          for ticker in ('2330.TW', '6488.TWO'):
+              data = fugle.download([ticker], current)
+              minute = fugle.minute_cache[ticker][1]
+              if minute.empty:
+                  raise RuntimeError('No current-day one-minute candles: ' + ticker)
+              payload = fugle.request_json(ticker, 'trades', 'limit=500&sort=desc')
+              if not payload.get('data'):
+                  raise RuntimeError('No single-trade data: ' + ticker)
+              events.trade_events(payload, {'ticker': ticker}, base.now_tw(), current - timedelta(seconds=180))
+              print(f'Verified {ticker}: minute_bars={len(minute)}, five_minute_bars={len(data)}, single_trades={len(payload["data"])}')
+          print('Three-event provider access verified; no trading alerts or orders sent')
+          PY
