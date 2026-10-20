@@ -61,7 +61,7 @@ jobs:
           FUGLE_API_KEY: ${{ secrets.FUGLE_MARKETDATA_API_KEY }}
         run: |
           python -m py_compile rising5_discord.py short_discord.py fugle_intraday.py
-          python -m unittest test_intraday_events.py test_rising_fugle.py -v
+          THREE_EVENT_ALERTS=0 python -m unittest test_intraday_events.py test_rising_fugle.py -v
           if [ "$MODE" = "monitor" ] || [ "$MODE" = "marketdata" ]; then
             if [ -z "$FUGLE_API_KEY" ]; then
               echo "Missing Fugle marketdata key; no monitoring started"

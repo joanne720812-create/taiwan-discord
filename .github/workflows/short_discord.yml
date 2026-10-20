@@ -68,7 +68,7 @@ jobs:
           INTRADAY_SHORT_WEBHOOK_URL: ${{ secrets.DISCORD_INTRADAY_SHORT_WEBHOOK_URL }}
         run: |
           python -m py_compile short_discord.py stock_discord.py
-          python -m unittest test_intraday_events.py test_followup.py test_fugle_intraday.py -v
+          THREE_EVENT_ALERTS=0 python -m unittest test_intraday_events.py test_followup.py test_fugle_intraday.py -v
           if [ "$MODE" != "scan" ]; then
             if [ -z "$INTRADAY_LONG_WEBHOOK_URL" ] || [ -z "$INTRADAY_SHORT_WEBHOOK_URL" ]; then
               echo "Missing long/short webhook; stopping to prevent sending to the wrong channel"
