@@ -259,7 +259,8 @@ def scan(latest=False, notify=True):
         except ValueError:
             failures += 1
             continue
-        item = dict(stock, ma60=ma, prior_ma60=prev_ma, daily_rsi=daily_rsi, daily_relvol=rel, **levels)
+        from intraday_events import volume_baseline
+        item = dict(stock, **volume_baseline(df, asof), ma60=ma, prior_ma60=prev_ma, daily_rsi=daily_rsi, daily_relvol=rel, **levels)
         pool.append(item)
         if ma < close <= ma * 1.1 and rel >= 1.5 and 50 <= daily_rsi < 70:
             candidates.append(item)
@@ -322,6 +323,11 @@ def sweep(report, events, history=None):
     pending = set(events["sent"])
     stocks = monitored_stocks(report)
     for stock, df in intraday_frames(stocks, history or {}):
+        from intraday_events import check_stock
+        try:
+            check_stock(stock, base.now_tw(), base)
+        except Exception:
+            LOG.warning("Three-event check failed for %s; existing 5m strategy continues", stock["ticker"])
         if not df.empty:
             valid += 1
         # Recheck recent candles so a slow download sweep cannot skip a cross.
@@ -391,13 +397,13 @@ def monitor():
     if not events.get("started"):
         scope = (f"每日候選{len(stocks)}檔；富果5分K，約每1–2分鐘檢查，其他股票不在盤中監控範圍。"
                  if os.getenv("INTRADAY_DATA_SOURCE") == "fugle" else f"完整合格池{len(stocks)}檔。")
-        base.send_discord(f"🟢 起漲5分K雲端監控啟動｜{day}\n前一交易日資料{asof}，{scope}\n完成5分K符合條件才通知。")
+        base.send_discord(f"🟢 起漲5分K雲端監控啟動｜{day}\n前一交易日資料{asof}，{scope}\n完成5分K符合條件才通知。" + ("\n另檢查單筆≥前5日均量2%、完成1分K拉抬／殺盤≥1%；REST輪詢約1–2分鐘，500筆明細可能漏筆，非逐筆即時串流。" if os.getenv("THREE_EVENT_ALERTS") == "1" else ""))
         events["started"] = True
         base.save(EVENT_FILE, events)
     next_check = base.now_tw()
     while base.now_tw().time() < clock(13, 50):
         current = base.now_tw()
-        if current.time() >= clock(9, 5) and current >= next_check:
+        if current.time() >= clock(9) and current.time() <= clock(13, 30) and current >= next_check:
             next_check = current + timedelta(seconds=60 if os.getenv("INTRADAY_DATA_SOURCE") == "fugle" else 300)
             sweep(report, events, history)
         time.sleep(60)

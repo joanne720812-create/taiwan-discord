@@ -939,7 +939,9 @@ def attach_levels(stocks, asof):
         close = float(row["Close"])
         if abs(close - stock["close"]) > max(0.05, close * 0.001):
             raise RuntimeError("CDP基準收盤核對失敗")
-        result.append({**stock, **cdp_levels(row["High"], row["Low"], close, asof)})
+        from intraday_events import volume_baseline
+        result.append({**stock, **cdp_levels(row["High"], row["Low"], close, asof),
+                       **volume_baseline(df, asof)})
     return result
 
 
@@ -1364,7 +1366,9 @@ def monitor(once=False):
         f"{names}\n" +
         ("行情來源：富果；" if os.getenv("INTRADAY_DATA_SOURCE") == "fugle" else "行情來源：Yahoo延遲行情；") +
         "每60秒檢查5分鐘K（含未收盤），另發5分K收盤確認穿越；排程與網路仍可能造成延遲。\n"
-        "訊號是條件提醒，不是立即下單指令。"
+        "訊號是條件提醒，不是立即下單指令。" +
+        ("\n新增獨立提醒：單筆≥前5交易日平均日量2%、相鄰完成1分K上漲／下跌≥1%。REST輪詢約1–2分鐘，成交明細最多500筆，活躍股可能漏筆；非逐筆即時串流。"
+         if os.getenv("THREE_EVENT_ALERTS") == "1" else "")
     )
 
     send_monitor_cards(stocks, asof)
@@ -1393,6 +1397,12 @@ def monitor(once=False):
                     df = frame_for(
                         data, stock["ticker"]
                     )
+
+                    from intraday_events import check_stock
+                    try:
+                        check_stock(stock, now_tw(), __import__(__name__))
+                    except Exception:
+                        LOG.warning("Three-event check failed for %s; existing 5m strategy continues", stock["ticker"])
 
                     bars = completed_bars(df, current)
 
